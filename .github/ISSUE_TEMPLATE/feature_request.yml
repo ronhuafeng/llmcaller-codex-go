@@ -1,0 +1,24 @@
+name: Feature request
+description: Suggest an adapter-scoped improvement.
+title: "feat: "
+labels: ["enhancement"]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem
+      description: What Codex caller adapter problem should this solve?
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposal
+      description: Describe the smallest adapter-scoped change that would solve it.
+    validations:
+      required: true
+  - type: textarea
+    id: boundary
+    attributes:
+      label: Boundary check
+      description: Explain why this belongs here instead of llmkit-go, codexsdk-go, or an application.

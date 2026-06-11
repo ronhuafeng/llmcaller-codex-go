@@ -1,0 +1,14 @@
+# Go build and test artifacts
+bin/
+dist/
+coverage.out
+*.test
+
+# Local editor and OS files
+.DS_Store
+.idea/
+.vscode/
+
+# Temporary local work
+tmp/
+*.tmp
