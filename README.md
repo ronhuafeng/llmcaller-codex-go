@@ -94,11 +94,8 @@ func main() {
 	})
 	defer threads.Close()
 
-	caller := codexcaller.New(codexcaller.Options{
-		ThreadClient:   threads,
-		ApprovalPolicy: codexsdk.ApprovalPolicyNever,
-		Ephemeral:      codexsdk.Bool(true),
-	})
+	options := codexcaller.ReadOnlyEphemeralOptions(threads)
+	caller := codexcaller.New(options)
 
 	out, err := llmadapter.Value[Summary](
 		ctx,
@@ -113,9 +110,12 @@ func main() {
 }
 ```
 
-If you already have a `codexsdk.ThreadClient`, pass it directly. `Options`
-also lets callers set a per-call model, working directory, reasoning effort,
-approval policy, approvals reviewer, and ephemeral-thread preference.
+If you already have a `codexsdk.ThreadClient`, pass it directly.
+`ReadOnlyEphemeralOptions` is the recommended default for structured-output
+calls that should not request tool approvals or persist as normal visible
+threads. The returned `Options` value is still mutable, so callers can set a
+per-call model, working directory, reasoning effort, approvals reviewer, or
+other explicit override before passing it to `New`.
 
 ## Typed Requests
 
@@ -159,6 +159,25 @@ required. `llmcaller-codex-go` applies this provider-specific policy in
 
 This package does not generate schemas from Go types. That remains the
 provider-neutral responsibility of `llmkit-go`.
+
+## Read-Only Ephemeral Calls
+
+For the common safe structured-output path, prefer
+`ReadOnlyEphemeralOptions`:
+
+```go
+options := codexcaller.ReadOnlyEphemeralOptions(threads)
+options.Model = model
+options.CWD = workspace
+options.Effort = codexsdk.ReasoningEffortLow
+
+caller := codexcaller.New(options)
+```
+
+The helper only sets Codex transport defaults: the supplied thread client,
+`ApprovalPolicyNever`, and `Ephemeral` true. Retry policy and semantic
+validation belong to `llmkit-go/llmstep`; prompt rendering and workflow control
+belong outside this adapter.
 
 ## Failure Semantics
 
@@ -220,6 +239,7 @@ The intended stable surface is:
 
 - `New`;
 - `Options`;
+- `ReadOnlyEphemeralOptions`;
 - `Caller.Call`;
 - `ThreadStarter`;
 - `StrictOutputSchemaFromJSON`;

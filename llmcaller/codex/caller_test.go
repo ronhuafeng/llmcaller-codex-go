@@ -28,6 +28,30 @@ func (starter *fakeThreadStarter) StartThread(ctx context.Context, request codex
 	return starter.response, nil
 }
 
+func TestReadOnlyEphemeralOptions(t *testing.T) {
+	starter := &fakeThreadStarter{}
+
+	options := ReadOnlyEphemeralOptions(starter)
+
+	if options.ThreadClient != starter {
+		t.Fatalf("ThreadClient = %#v, want supplied starter", options.ThreadClient)
+	}
+	if options.ApprovalPolicy != codexsdk.ApprovalPolicyNever {
+		t.Fatalf("ApprovalPolicy = %q, want %q", options.ApprovalPolicy, codexsdk.ApprovalPolicyNever)
+	}
+	if options.Ephemeral == nil || !*options.Ephemeral {
+		t.Fatalf("Ephemeral = %#v, want true", options.Ephemeral)
+	}
+
+	options.Model = "gpt-5"
+	options.CWD = "/tmp/work"
+	options.Effort = codexsdk.ReasoningEffortLow
+
+	if options.Model != "gpt-5" || options.CWD != "/tmp/work" || options.Effort != codexsdk.ReasoningEffortLow {
+		t.Fatalf("returned options should remain mutable: %#v", options)
+	}
+}
+
 func TestCallerAdaptsTypedRequestToCodexStartThread(t *testing.T) {
 	starter := &fakeThreadStarter{response: codexsdk.ThreadRunResult{FinalResponse: `{"answer":true}`}}
 	caller := New(Options{

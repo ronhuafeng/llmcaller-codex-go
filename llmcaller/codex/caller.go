@@ -31,6 +31,15 @@ type Options struct {
 	Ephemeral         *bool
 }
 
+// ReadOnlyEphemeralOptions returns safe defaults for read-only structured calls.
+func ReadOnlyEphemeralOptions(threadClient ThreadStarter) Options {
+	return Options{
+		ThreadClient:   threadClient,
+		ApprovalPolicy: codexsdk.ApprovalPolicyNever,
+		Ephemeral:      codexsdk.Bool(true),
+	}
+}
+
 type Caller struct {
 	threadClient      ThreadStarter
 	model             string
