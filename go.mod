@@ -3,8 +3,8 @@ module github.com/ronhuafeng/llmcaller-codex-go
 go 1.23.0
 
 require (
-	github.com/ronhuafeng/codexsdk-go v0.2.0-rc.1
-	github.com/ronhuafeng/llmkit-go v0.2.0-rc.1
+	github.com/ronhuafeng/codexsdk-go v0.2.0
+	github.com/ronhuafeng/llmkit-go v0.2.0
 )
 
 require (

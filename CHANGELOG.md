@@ -6,7 +6,7 @@ This project follows Semantic Versioning.
 
 ## [Unreleased]
 
-## [0.2.0-rc.1] - 2026-07-11
+## [0.2.0] - 2026-07-11
 
 - Replaced projected Codex options with exact `StartThreadRunRequest` defaults
   and a minimal consumer-owned `ThreadRunner` interface.
@@ -19,7 +19,7 @@ This project follows Semantic Versioning.
   optional non-nullable, external, unresolved, dynamic, and cyclic references.
 - Added a canonical handwritten API allowlist, three-layer compiled example,
   migration guide, compatibility matrix, and cross-repository release gates.
-- Requires `llmkit-go v0.2.0-rc.1` and `codexsdk-go v0.2.0-rc.1`.
+- Requires `llmkit-go v0.2.0` and `codexsdk-go v0.2.0`.
 
 ## [0.1.0] - 2026-06-11
 
