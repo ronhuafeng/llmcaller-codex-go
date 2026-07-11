@@ -456,7 +456,7 @@ func TestStrictOutputSchemaCompatibilityMatrix(t *testing.T) {
 		type output struct {
 			Name string `json:"name"`
 		}
-		assertGoSchemaAccepted[output](t)
+		assertSchemaJSONValueEqual(t, schemaFor[output](t))
 	})
 	t.Run("optional-pointer-preserved", func(t *testing.T) {
 		type output struct {
@@ -464,6 +464,7 @@ func TestStrictOutputSchemaCompatibilityMatrix(t *testing.T) {
 			Note *string `json:"note,omitempty"`
 		}
 		assertGoSchemaAccepted[output](t)
+		assertDecodedValuesEqual[output](t, `{"name":"x"}`, `{"name":"x","note":null}`)
 	})
 	t.Run("optional-scalar-fails-closed", func(t *testing.T) {
 		type output struct {
@@ -480,6 +481,7 @@ func TestStrictOutputSchemaCompatibilityMatrix(t *testing.T) {
 			Child child `json:"child"`
 		}
 		assertGoSchemaAccepted[output](t)
+		assertDecodedValuesEqual[output](t, `{"child":{}}`, `{"child":{"note":null}}`)
 	})
 	t.Run("optional-map-fails-closed", func(t *testing.T) {
 		type output struct {
@@ -492,12 +494,14 @@ func TestStrictOutputSchemaCompatibilityMatrix(t *testing.T) {
 			Items []string `json:"items,omitempty"`
 		}
 		assertGoSchemaAccepted[output](t)
+		assertDecodedValuesEqual[output](t, `{}`, `{"items":null}`)
 	})
 	t.Run("optional-pointer-to-slice-preserved", func(t *testing.T) {
 		type output struct {
 			Items *[]string `json:"items,omitempty"`
 		}
 		assertGoSchemaAccepted[output](t)
+		assertDecodedValuesEqual[output](t, `{}`, `{"items":null}`)
 	})
 	t.Run("optional-raw-message-has-decoding-limitation", func(t *testing.T) {
 		type output struct {
@@ -543,7 +547,9 @@ func TestStrictOutputSchemaCompatibilityMatrix(t *testing.T) {
 			t.Fatal(err)
 		}
 		encoded, _ := schema.MarshalJSON()
-		if !strings.Contains(string(encoded), `"required":["note"]`) {
+		if !strings.Contains(string(encoded), `"required":["note"]`) ||
+			!strings.Contains(string(encoded), `"$ref":"#/$defs/note"`) ||
+			!strings.Contains(string(encoded), `"anyOf":[{"type":"string"},{"type":"null"}]`) {
 			t.Fatalf("schema = %s", encoded)
 		}
 	})
@@ -554,15 +560,19 @@ func TestStrictOutputSchemaCompatibilityMatrix(t *testing.T) {
 	})
 	t.Run("boolean-schema-has-codex-limitation", func(t *testing.T) {
 		for _, raw := range []json.RawMessage{json.RawMessage(`true`), json.RawMessage(`false`)} {
-			if _, err := StrictOutputSchemaFromJSON(raw); err != nil {
-				t.Fatalf("boolean schema %s rejected: %v", raw, err)
-			}
+			assertSchemaJSONValueEqual(t, raw)
 		}
 	})
 	t.Run("draft-2020-12-preserved", func(t *testing.T) {
-		_, err := StrictOutputSchemaFromJSON(json.RawMessage(`{"$schema":"https://json-schema.org/draft/2020-12/schema","type":"object","properties":{"note":{"type":["string","null"]}}}`))
+		raw := json.RawMessage(`{"$schema":"https://json-schema.org/draft/2020-12/schema","type":"object","required":["note"],"properties":{"note":{"type":["string","null"],"minLength":2}}}`)
+		schema, err := StrictOutputSchemaFromJSON(raw)
 		if err != nil {
 			t.Fatal(err)
+		}
+		encoded, _ := schema.MarshalJSON()
+		if !strings.Contains(string(encoded), `"$schema":"https://json-schema.org/draft/2020-12/schema"`) ||
+			!strings.Contains(string(encoded), `"minLength":2`) {
+			t.Fatalf("draft or constraint changed: %s", encoded)
 		}
 	})
 	t.Run("draft-7-ref-sibling-limitation", func(t *testing.T) {
@@ -594,13 +604,30 @@ func TestStrictOutputSchemaCompatibilityMatrix(t *testing.T) {
 			t.Fatalf("unknown assertion changed: %s", encoded)
 		}
 	})
-	t.Run("additional-properties-schema-preserved", func(t *testing.T) {
-		schema, err := StrictOutputSchemaFromJSON(json.RawMessage(`{"type":"object","additionalProperties":{"type":"object","properties":{"note":{"type":["string","null"]}}}}`))
+	t.Run("dynamic-anchor-has-resolution-limitation", func(t *testing.T) {
+		schema, err := StrictOutputSchemaFromJSON(json.RawMessage(`{"$dynamicAnchor":"node","type":"object"}`))
 		if err != nil {
 			t.Fatal(err)
 		}
 		encoded, _ := schema.MarshalJSON()
-		if !strings.Contains(string(encoded), `"required":["note"]`) {
+		if !strings.Contains(string(encoded), `"$dynamicAnchor":"node"`) {
+			t.Fatalf("dynamic anchor changed: %s", encoded)
+		}
+	})
+	t.Run("vocabulary-fails-closed", func(t *testing.T) {
+		assertSchemaError(t,
+			json.RawMessage(`{"$vocabulary":{"https://example.test/vocab":true},"type":"object"}`),
+			"invalid_schema", "")
+	})
+	t.Run("additional-properties-schema-preserved", func(t *testing.T) {
+		schema, err := StrictOutputSchemaFromJSON(json.RawMessage(`{"type":"object","additionalProperties":{"type":"object","maxProperties":2,"x-note":{"level":3},"properties":{"note":{"type":["string","null"]}}}}`))
+		if err != nil {
+			t.Fatal(err)
+		}
+		encoded, _ := schema.MarshalJSON()
+		if !strings.Contains(string(encoded), `"required":["note"]`) ||
+			!strings.Contains(string(encoded), `"maxProperties":2`) ||
+			!strings.Contains(string(encoded), `"x-note":{"level":3}`) {
 			t.Fatalf("nested additionalProperties schema was not normalized: %s", encoded)
 		}
 	})
@@ -802,6 +829,42 @@ func assertGoSchemaAccepted[T any](t *testing.T) {
 	t.Helper()
 	if _, err := StrictOutputSchemaFromJSON(schemaFor[T](t)); err != nil {
 		t.Fatalf("schema rejected: %v\n%s", err, schemaFor[T](t))
+	}
+}
+
+func assertDecodedValuesEqual[T any](t *testing.T, absentJSON, nullJSON string) {
+	t.Helper()
+	var absent, explicitNull T
+	if err := json.Unmarshal([]byte(absentJSON), &absent); err != nil {
+		t.Fatal(err)
+	}
+	if err := json.Unmarshal([]byte(nullJSON), &explicitNull); err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(absent, explicitNull) {
+		t.Fatalf("absence/null decoded values differ: absent=%#v null=%#v", absent, explicitNull)
+	}
+}
+
+func assertSchemaJSONValueEqual(t *testing.T, raw json.RawMessage) {
+	t.Helper()
+	schema, err := StrictOutputSchemaFromJSON(raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	encoded, err := schema.MarshalJSON()
+	if err != nil {
+		t.Fatal(err)
+	}
+	var before, after any
+	if err := json.Unmarshal(raw, &before); err != nil {
+		t.Fatal(err)
+	}
+	if err := json.Unmarshal(encoded, &after); err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(before, after) {
+		t.Fatalf("schema JSON value changed:\nbefore: %s\nafter:  %s", raw, encoded)
 	}
 }
 

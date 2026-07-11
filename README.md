@@ -133,10 +133,12 @@ parser/serializer MUST survive by decoded JSON value semantics. The adapter
 does not promise that an unsupported assertion keyword is enforced. Supported
 local `$ref` values are URI fragments containing JSON Pointer references; their
 target meaning and applicable sibling constraints MUST be preserved according
-to the selected draft. External resources, `$dynamicRef`/dynamic anchors,
-recursive or cyclic graphs, unresolvable references, unsupported drafts or
-vocabularies, and any schema whose null admission cannot be proven MUST fail
-closed.
+to the selected draft. External resources, `$dynamicRef`, recursive or cyclic
+graphs, unresolvable references, unsupported draft identifiers, and any schema
+whose null admission cannot be proven MUST fail closed. `$vocabulary`
+declarations also fail closed. A `$dynamicAnchor` value without `$dynamicRef`
+is retained, but dynamic-resolution semantics are not supported or guaranteed;
+schemas that rely on those semantics are outside this contract.
 
 Fail-closed errors MUST be `*SchemaPolicyError` with the stable `Kind` and JSON
 Pointer `Path` documented in the matrix. A failure returned by `Caller` MUST
@@ -175,6 +177,8 @@ with the listed stable error.
 | `unsupported-draft-fails-closed` — unknown explicit draft identifier | Fail-closed: `invalid_schema` at the root path |
 | `unknown-annotation-preserved` — unknown annotation keyword | Preserved by decoded JSON value semantics |
 | `unknown-assertion-has-validation-limitation` — unknown assertion keyword | Limitation: value preserved, enforcement not guaranteed |
+| `dynamic-anchor-has-resolution-limitation` — `$dynamicAnchor` without `$dynamicRef` | Limitation: value preserved, dynamic-resolution semantics not guaranteed |
+| `vocabulary-fails-closed` — `$vocabulary` declaration | Fail-closed: `invalid_schema` at the root path |
 | `additional-properties-schema-preserved` — object schema in `additionalProperties` | Preserved; nested object properties undergo the same required/null rule |
 | `conditional-null-fails-closed` — conditional schema that rejects null | Fail-closed: `optional_non_nullable` at `/properties/value` |
 | `cyclic-ref-fails-closed` — cyclic local reference graph | Fail-closed: `cyclic_ref` at the reference pointer |
