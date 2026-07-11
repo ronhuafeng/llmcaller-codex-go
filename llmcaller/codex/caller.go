@@ -13,6 +13,7 @@ import (
 	"github.com/ronhuafeng/codexsdk-go/codexsdk"
 	"github.com/ronhuafeng/codexsdk-go/codexsdk/protocolv2"
 	"github.com/ronhuafeng/llmkit-go/llmadapter"
+	"github.com/santhosh-tekuri/jsonschema/v6"
 )
 
 var (
@@ -294,9 +295,22 @@ func StrictOutputSchemaFromJSON(raw json.RawMessage) (protocolv2.OutputSchema, e
 	if err := decoder.Decode(&root); err != nil {
 		return protocolv2.OutputSchema{}, &SchemaPolicyError{Path: "", Kind: "invalid_json", Err: err}
 	}
-	transformer := schemaTransformer{root: root}
+	compiler := jsonschema.NewCompiler()
+	compiler.DefaultDraft(jsonschema.Draft2020)
+	if usesLegacyTupleItems(root) {
+		compiler.DefaultDraft(jsonschema.Draft7)
+	}
+	compiler.UseLoader(rejectSchemaResourceLoader{})
+	const schemaResourceURL = "https://llmcaller.invalid/output-schema.json"
+	if err := compiler.AddResource(schemaResourceURL, root); err != nil {
+		return protocolv2.OutputSchema{}, &SchemaPolicyError{Path: "", Kind: "invalid_schema", Err: err}
+	}
+	transformer := schemaTransformer{root: root, compiler: compiler, resourceURL: schemaResourceURL}
 	if err := transformer.walk(root, "", nil); err != nil {
 		return protocolv2.OutputSchema{}, err
+	}
+	if _, err := compiler.Compile(schemaResourceURL); err != nil {
+		return protocolv2.OutputSchema{}, &SchemaPolicyError{Path: "", Kind: "invalid_schema", Err: err}
 	}
 	out, err := json.Marshal(root)
 	if err != nil {
@@ -309,7 +323,17 @@ func StrictOutputSchemaFromJSON(raw json.RawMessage) (protocolv2.OutputSchema, e
 	return schema, nil
 }
 
-type schemaTransformer struct{ root any }
+type schemaTransformer struct {
+	root        any
+	compiler    *jsonschema.Compiler
+	resourceURL string
+}
+
+type rejectSchemaResourceLoader struct{}
+
+func (rejectSchemaResourceLoader) Load(url string) (any, error) {
+	return nil, fmt.Errorf("external schema resource %q is unsupported", url)
+}
 
 func (t schemaTransformer) walk(value any, path string, refs map[string]bool) error {
 	object, ok := value.(map[string]any)
@@ -354,7 +378,7 @@ func (t schemaTransformer) walk(value any, path string, refs map[string]bool) er
 				return err
 			}
 			if !required[name] {
-				admits, err := t.admitsNull(property, map[string]bool{})
+				admits, err := t.admitsNull(propertyPath)
 				if err != nil {
 					return &SchemaPolicyError{Path: propertyPath, Kind: "nullable_analysis", Err: err}
 				}
@@ -370,7 +394,11 @@ func (t schemaTransformer) walk(value any, path string, refs map[string]bool) er
 				names = append(names, name)
 			}
 			sort.Strings(names)
-			object["required"] = names
+			requiredValues := make([]any, len(names))
+			for index, name := range names {
+				requiredValues[index] = name
+			}
+			object["required"] = requiredValues
 		}
 	} else if _, present := object["properties"]; present {
 		return &SchemaPolicyError{Path: path + "/properties", Kind: "invalid_properties", Err: errors.New("properties must be an object")}
@@ -435,101 +463,12 @@ func (t schemaTransformer) walk(value any, path string, refs map[string]bool) er
 	return nil
 }
 
-func (t schemaTransformer) admitsNull(value any, refs map[string]bool) (bool, error) {
-	if boolean, ok := value.(bool); ok {
-		return boolean, nil
+func (t schemaTransformer) admitsNull(path string) (bool, error) {
+	schema, err := t.compiler.Compile(t.resourceURL + "#" + path)
+	if err != nil {
+		return false, err
 	}
-	object, ok := value.(map[string]any)
-	if !ok {
-		return false, errors.New("subschema must be an object or boolean")
-	}
-	result := true
-	if _, exists := object["$dynamicRef"]; exists {
-		return false, errors.New("dynamic references are unsupported")
-	}
-	if refValue, exists := object["$ref"]; exists {
-		ref, ok := refValue.(string)
-		if !ok || !strings.HasPrefix(ref, "#") {
-			return false, errors.New("nullable analysis requires a resolvable local $ref")
-		}
-		if refs[ref] {
-			return false, fmt.Errorf("cyclic reference %q", ref)
-		}
-		resolved, err := resolveLocalRef(t.root, ref)
-		if err != nil {
-			return false, err
-		}
-		next := copyRefSet(refs)
-		next[ref] = true
-		result, err = t.admitsNull(resolved, next)
-		if err != nil || !result {
-			return result, err
-		}
-	}
-	if typeValue, exists := object["type"]; exists {
-		result = containsNullType(typeValue)
-	}
-	if enum, exists := object["enum"].([]any); exists {
-		result = result && containsNil(enum)
-	}
-	if constant, exists := object["const"]; exists {
-		result = result && constant == nil
-	}
-	for _, key := range []string{"allOf"} {
-		if branches, exists := object[key].([]any); exists {
-			for _, branch := range branches {
-				admits, err := t.admitsNull(branch, refs)
-				if err != nil {
-					return false, err
-				}
-				result = result && admits
-			}
-		}
-	}
-	for _, key := range []string{"anyOf", "oneOf"} {
-		if branches, exists := object[key].([]any); exists {
-			matches := 0
-			for _, branch := range branches {
-				admits, err := t.admitsNull(branch, refs)
-				if err != nil {
-					return false, err
-				}
-				if admits {
-					matches++
-				}
-			}
-			if key == "oneOf" {
-				result = result && matches == 1
-			} else {
-				result = result && matches > 0
-			}
-		}
-	}
-	if negated, exists := object["not"]; exists {
-		admits, err := t.admitsNull(negated, refs)
-		if err != nil {
-			return false, err
-		}
-		result = result && !admits
-	}
-	if condition, exists := object["if"]; exists {
-		matches, err := t.admitsNull(condition, refs)
-		if err != nil {
-			return false, err
-		}
-		branch := object["else"]
-		if matches {
-			branch = object["then"]
-		}
-		if branch != nil {
-			admits, err := t.admitsNull(branch, refs)
-			if err != nil {
-				return false, err
-			}
-			result = result && admits
-		}
-	}
-	return result, nil
+	return schema.Validate(nil) == nil, nil
 }
 
 func requiredSet(value any, path string) (map[string]bool, error) {
@@ -578,26 +517,22 @@ func objectMap(value any) (map[string]any, bool) {
 	return object, ok
 }
 
-func containsNullType(value any) bool {
-	if text, ok := value.(string); ok {
-		return text == "null"
-	}
-	list, ok := value.([]any)
-	if !ok {
-		return false
-	}
-	for _, item := range list {
-		if item == "null" {
+func usesLegacyTupleItems(value any) bool {
+	switch value := value.(type) {
+	case []any:
+		for _, child := range value {
+			if usesLegacyTupleItems(child) {
+				return true
+			}
+		}
+	case map[string]any:
+		if _, legacy := value["items"].([]any); legacy {
 			return true
 		}
-	}
-	return false
-}
-
-func containsNil(values []any) bool {
-	for _, value := range values {
-		if value == nil {
-			return true
+		for _, child := range value {
+			if usesLegacyTupleItems(child) {
+				return true
+			}
 		}
 	}
 	return false

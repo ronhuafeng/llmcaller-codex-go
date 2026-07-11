@@ -12,6 +12,7 @@ import (
 	"github.com/ronhuafeng/codexsdk-go/codexsdk/protocolv2"
 	"github.com/ronhuafeng/llmkit-go/llmadapter"
 	"github.com/ronhuafeng/llmkit-go/llmschema"
+	"github.com/santhosh-tekuri/jsonschema/v6"
 )
 
 type fakeRunner struct {
@@ -501,6 +502,149 @@ func TestStrictOutputSchemaCompatibilityMatrix(t *testing.T) {
 	t.Run("unresolvable ref", func(t *testing.T) {
 		assertSchemaErrorKind(t, json.RawMessage(`{"$ref":"#/$defs/missing"}`), "unresolvable_ref")
 	})
+}
+
+func TestStrictOutputSchemaUsesJSONSchemaSemanticsForNullAdmission(t *testing.T) {
+	tests := []struct {
+		name     string
+		schema   string
+		wantKind string
+	}{
+		{
+			name:     "reference rejects null while sibling admits it",
+			schema:   `{"type":"object","properties":{"x":{"$ref":"#/$defs/nonNull","type":["string","null"]}},"$defs":{"nonNull":{"type":"string"}}}`,
+			wantKind: "optional_non_nullable",
+		},
+		{
+			name:     "reference admits null while sibling rejects it",
+			schema:   `{"type":"object","properties":{"x":{"$ref":"#/$defs/nullable","type":"string"}},"$defs":{"nullable":{"type":["string","null"]}}}`,
+			wantKind: "optional_non_nullable",
+		},
+		{
+			name:   "reference and sibling both admit null",
+			schema: `{"type":"object","properties":{"x":{"$ref":"#/$defs/nullable","type":["string","null"]}},"$defs":{"nullable":{"type":["string","null"]}}}`,
+		},
+		{
+			name:     "nested local references with siblings",
+			schema:   `{"type":"object","properties":{"x":{"$ref":"#/$defs/outer","type":["string","null"]}},"$defs":{"outer":{"$ref":"#/$defs/inner","type":["string","null"]},"inner":{"type":"string"}}}`,
+			wantKind: "optional_non_nullable",
+		},
+		{
+			name:     "allOf requires every branch to admit null",
+			schema:   `{"type":"object","properties":{"x":{"allOf":[{"type":["string","null"]},{"type":"string"}]}}}`,
+			wantKind: "optional_non_nullable",
+		},
+		{
+			name:   "anyOf accepts one matching branch",
+			schema: `{"type":"object","properties":{"x":{"anyOf":[{"type":"string"},{"type":"null"}]}}}`,
+		},
+		{
+			name:     "oneOf rejects two matching branches",
+			schema:   `{"type":"object","properties":{"x":{"oneOf":[{}, {"type":"null"}]}}}`,
+			wantKind: "optional_non_nullable",
+		},
+		{
+			name:     "not rejects null",
+			schema:   `{"type":"object","properties":{"x":{"not":{"const":null}}}}`,
+			wantKind: "optional_non_nullable",
+		},
+		{
+			name:   "enum accepts null",
+			schema: `{"type":"object","properties":{"x":{"enum":[null,"x"]}}}`,
+		},
+		{
+			name:     "conditional applies matching then branch",
+			schema:   `{"type":"object","properties":{"x":{"if":{"type":"null"},"then":{"const":"not-null"},"else":true}}}`,
+			wantKind: "optional_non_nullable",
+		},
+		{
+			name:   "draft seven ignores reference siblings",
+			schema: `{"$schema":"http://json-schema.org/draft-07/schema#","type":"object","properties":{"x":{"$ref":"#/$defs/nullable","type":"string"}},"$defs":{"nullable":{"type":["string","null"]}}}`,
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			schema, err := StrictOutputSchemaFromJSON(json.RawMessage(test.schema))
+			if test.wantKind != "" {
+				var policyErr *SchemaPolicyError
+				if !errors.As(err, &policyErr) || policyErr.Kind != test.wantKind || policyErr.Path != "/properties/x" {
+					t.Fatalf("error = %#v, want %s at /properties/x", policyErr, test.wantKind)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			encoded, err := schema.MarshalJSON()
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !strings.Contains(string(encoded), `"required":["x"]`) {
+				t.Fatalf("schema = %s", encoded)
+			}
+		})
+	}
+}
+
+func TestStrictOutputSchemaFailsClosedWhenNullProbeSchemaDoesNotCompile(t *testing.T) {
+	assertSchemaErrorKind(t, json.RawMessage(`{"type":"object","properties":{"x":{"type":["null",1]}}}`), "nullable_analysis")
+	assertSchemaErrorKind(t, json.RawMessage(`{"type":"object","required":["x"],"properties":{"x":{"type":["null",1]}}}`), "invalid_schema")
+}
+
+func TestStrictOutputSchemaDecisionMatchesDirectValidator(t *testing.T) {
+	propertySchemas := []string{
+		`{"type":"null"}`,
+		`{"type":"string"}`,
+		`{"allOf":[{"type":["string","null"]},{"const":null}]}`,
+		`{"anyOf":[{"type":"string"},{"enum":[null]}]}`,
+		`{"oneOf":[{}, {"type":"null"}]}`,
+		`{"not":{"enum":[null]}}`,
+		`{"if":{"type":"null"},"then":false,"else":true}`,
+	}
+
+	for _, propertySchema := range propertySchemas {
+		raw := json.RawMessage(`{"$schema":"https://json-schema.org/draft/2020-12/schema","type":"object","properties":{"x":` + propertySchema + `}}`)
+		var document any
+		decoder := json.NewDecoder(strings.NewReader(string(raw)))
+		decoder.UseNumber()
+		if err := decoder.Decode(&document); err != nil {
+			t.Fatal(err)
+		}
+		compiler := jsonschema.NewCompiler()
+		if err := compiler.AddResource("https://test.invalid/schema.json", document); err != nil {
+			t.Fatal(err)
+		}
+		property, err := compiler.Compile("https://test.invalid/schema.json#/properties/x")
+		if err != nil {
+			t.Fatal(err)
+		}
+		wantPromotion := property.Validate(nil) == nil
+		_, transformErr := StrictOutputSchemaFromJSON(raw)
+		gotPromotion := transformErr == nil
+		if gotPromotion != wantPromotion {
+			t.Errorf("property %s: promoted = %v, direct validator accepts null = %v, error = %v", propertySchema, gotPromotion, wantPromotion, transformErr)
+		}
+	}
+}
+
+func TestCallerRejectsUncertainNullAdmissionBeforeRunnerInvocation(t *testing.T) {
+	runner := &fakeRunner{}
+	caller, err := New(Options{Runner: runner})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = caller.CallDetailed(context.Background(), llmadapter.Request{
+		Prompt:       "must not run",
+		OutputSchema: json.RawMessage(`{"type":"object","properties":{"x":{"type":["null",1]}}}`),
+	})
+	var policyErr *SchemaPolicyError
+	if !errors.As(err, &policyErr) || policyErr.Kind != "nullable_analysis" || policyErr.Path != "/properties/x" {
+		t.Fatalf("error = %#v", policyErr)
+	}
+	if len(runner.requests) != 0 {
+		t.Fatalf("runner requests = %d", len(runner.requests))
+	}
 }
 
 func TestStrictOutputSchemaRejectsDuplicateKeysAndPreservesPointerPath(t *testing.T) {
