@@ -39,6 +39,15 @@ func (runner *fakeRunner) StartStream(ctx context.Context, request codexsdk.Star
 var _ ThreadRunner = (*fakeRunner)(nil)
 var _ llmadapter.Caller = (*Caller)(nil)
 
+type nullAwareString struct {
+	SawNull bool
+}
+
+func (value *nullAwareString) UnmarshalJSON(data []byte) error {
+	value.SawNull = string(data) == "null"
+	return nil
+}
+
 func TestNewValidatesRunnerAndOwnedDefaults(t *testing.T) {
 	if _, err := New(Options{}); !errors.Is(err, ErrNilThreadRunner) {
 		t.Fatalf("New error = %v, want ErrNilThreadRunner", err)
@@ -443,27 +452,28 @@ func TestCallerWorksThroughLLMAdapterDetailedPath(t *testing.T) {
 }
 
 func TestStrictOutputSchemaCompatibilityMatrix(t *testing.T) {
-	t.Run("required scalar", func(t *testing.T) {
+	t.Run("required-scalar-preserved", func(t *testing.T) {
 		type output struct {
 			Name string `json:"name"`
 		}
-		assertGoSchemaAccepted[output](t)
+		assertSchemaJSONValueEqual(t, schemaFor[output](t))
 	})
-	t.Run("nullable pointer", func(t *testing.T) {
+	t.Run("optional-pointer-preserved", func(t *testing.T) {
 		type output struct {
 			Name string  `json:"name"`
 			Note *string `json:"note,omitempty"`
 		}
 		assertGoSchemaAccepted[output](t)
+		assertDecodedValuesEqual[output](t, `{"name":"x"}`, `{"name":"x","note":null}`)
 	})
-	t.Run("non nullable omitempty", func(t *testing.T) {
+	t.Run("optional-scalar-fails-closed", func(t *testing.T) {
 		type output struct {
 			Name  string `json:"name"`
 			Score int    `json:"score,omitempty"`
 		}
-		assertSchemaErrorKind(t, schemaFor[output](t), "optional_non_nullable")
+		assertSchemaError(t, schemaFor[output](t), "optional_non_nullable", "/properties/score")
 	})
-	t.Run("nested optional", func(t *testing.T) {
+	t.Run("nested-optional-pointer-preserved", func(t *testing.T) {
 		type child struct {
 			Note *string `json:"note,omitempty"`
 		}
@@ -471,36 +481,172 @@ func TestStrictOutputSchemaCompatibilityMatrix(t *testing.T) {
 			Child child `json:"child"`
 		}
 		assertGoSchemaAccepted[output](t)
+		assertDecodedValuesEqual[output](t, `{"child":{}}`, `{"child":{"note":null}}`)
 	})
-	t.Run("local ref nullable", func(t *testing.T) {
+	t.Run("optional-map-fails-closed", func(t *testing.T) {
+		type output struct {
+			Labels map[string]int `json:"labels,omitempty"`
+		}
+		assertSchemaError(t, schemaFor[output](t), "optional_non_nullable", "/properties/labels")
+	})
+	t.Run("optional-slice-preserved", func(t *testing.T) {
+		type output struct {
+			Items []string `json:"items,omitempty"`
+		}
+		assertGoSchemaAccepted[output](t)
+		assertDecodedValuesEqual[output](t, `{}`, `{"items":null}`)
+	})
+	t.Run("optional-pointer-to-slice-preserved", func(t *testing.T) {
+		type output struct {
+			Items *[]string `json:"items,omitempty"`
+		}
+		assertGoSchemaAccepted[output](t)
+		assertDecodedValuesEqual[output](t, `{}`, `{"items":null}`)
+	})
+	t.Run("optional-raw-message-has-decoding-limitation", func(t *testing.T) {
+		type output struct {
+			Payload json.RawMessage `json:"payload,omitempty"`
+		}
+		assertGoSchemaAccepted[output](t)
+
+		var absent, explicitNull output
+		if err := json.Unmarshal([]byte(`{}`), &absent); err != nil {
+			t.Fatal(err)
+		}
+		if err := json.Unmarshal([]byte(`{"payload":null}`), &explicitNull); err != nil {
+			t.Fatal(err)
+		}
+		if absent.Payload != nil || string(explicitNull.Payload) != "null" {
+			t.Fatalf("RawMessage absence/null distinction changed: absent=%q null=%q", absent.Payload, explicitNull.Payload)
+		}
+	})
+	t.Run("custom-unmarshaler-has-decoding-limitation", func(t *testing.T) {
+		raw := json.RawMessage(`{"type":"object","properties":{"value":{"type":["object","null"]}}}`)
+		if _, err := StrictOutputSchemaFromJSON(raw); err != nil {
+			t.Fatal(err)
+		}
+
+		type output struct {
+			Value nullAwareString `json:"value,omitempty"`
+		}
+		var absent, explicitNull output
+		if err := json.Unmarshal([]byte(`{}`), &absent); err != nil {
+			t.Fatal(err)
+		}
+		if err := json.Unmarshal([]byte(`{"value":null}`), &explicitNull); err != nil {
+			t.Fatal(err)
+		}
+		if absent.Value.SawNull || !explicitNull.Value.SawNull {
+			t.Fatal("custom unmarshaler did not demonstrate the documented absence/null distinction")
+		}
+	})
+	t.Run("local-ref-preserved", func(t *testing.T) {
 		raw := json.RawMessage(`{"type":"object","properties":{"note":{"$ref":"#/$defs/note"}},"$defs":{"note":{"anyOf":[{"type":"string"},{"type":"null"}]}}}`)
 		schema, err := StrictOutputSchemaFromJSON(raw)
 		if err != nil {
 			t.Fatal(err)
 		}
 		encoded, _ := schema.MarshalJSON()
-		if !strings.Contains(string(encoded), `"required":["note"]`) {
+		if !strings.Contains(string(encoded), `"required":["note"]`) ||
+			!strings.Contains(string(encoded), `"$ref":"#/$defs/note"`) ||
+			!strings.Contains(string(encoded), `"anyOf":[{"type":"string"},{"type":"null"}]`) {
 			t.Fatalf("schema = %s", encoded)
 		}
 	})
-	t.Run("cyclic local ref", func(t *testing.T) {
-		assertSchemaErrorKind(t, json.RawMessage(`{"$defs":{"node":{"$ref":"#/$defs/node"}},"$ref":"#/$defs/node"}`), "cyclic_ref")
+	t.Run("nested-ref-with-sibling-constraint-fails-closed", func(t *testing.T) {
+		assertSchemaError(t,
+			json.RawMessage(`{"type":"object","properties":{"value":{"$ref":"#/$defs/outer","type":["string","null"]}},"$defs":{"outer":{"$ref":"#/$defs/inner","type":["string","null"]},"inner":{"type":"string"}}}`),
+			"optional_non_nullable", "/properties/value")
 	})
-	t.Run("unknown keyword", func(t *testing.T) {
-		schema, err := StrictOutputSchemaFromJSON(json.RawMessage(`{"type":"object","required":["name"],"properties":{"name":{"type":"string","x-rule":{"level":2}}}}`))
+	t.Run("boolean-schema-has-codex-limitation", func(t *testing.T) {
+		for _, raw := range []json.RawMessage{json.RawMessage(`true`), json.RawMessage(`false`)} {
+			assertSchemaJSONValueEqual(t, raw)
+		}
+	})
+	t.Run("draft-2020-12-preserved", func(t *testing.T) {
+		raw := json.RawMessage(`{"$schema":"https://json-schema.org/draft/2020-12/schema","type":"object","required":["note"],"properties":{"note":{"type":["string","null"],"minLength":2}}}`)
+		schema, err := StrictOutputSchemaFromJSON(raw)
 		if err != nil {
 			t.Fatal(err)
 		}
 		encoded, _ := schema.MarshalJSON()
-		if !strings.Contains(string(encoded), `"x-rule":{"level":2}`) {
+		if !strings.Contains(string(encoded), `"$schema":"https://json-schema.org/draft/2020-12/schema"`) ||
+			!strings.Contains(string(encoded), `"minLength":2`) {
+			t.Fatalf("draft or constraint changed: %s", encoded)
+		}
+	})
+	t.Run("draft-7-ref-sibling-limitation", func(t *testing.T) {
+		_, err := StrictOutputSchemaFromJSON(json.RawMessage(`{"$schema":"http://json-schema.org/draft-07/schema#","type":"object","properties":{"value":{"$ref":"#/$defs/nullable","type":"string"}},"$defs":{"nullable":{"type":["string","null"]}}}`))
+		if err != nil {
+			t.Fatal(err)
+		}
+	})
+	t.Run("unsupported-draft-fails-closed", func(t *testing.T) {
+		assertSchemaError(t, json.RawMessage(`{"$schema":"https://json-schema.org/draft/9999/schema","type":"object"}`), "invalid_schema", "")
+	})
+	t.Run("unknown-annotation-preserved", func(t *testing.T) {
+		schema, err := StrictOutputSchemaFromJSON(json.RawMessage(`{"type":"object","required":["name"],"properties":{"name":{"type":"string","x-note":{"level":2}}}}`))
+		if err != nil {
+			t.Fatal(err)
+		}
+		encoded, _ := schema.MarshalJSON()
+		if !strings.Contains(string(encoded), `"x-note":{"level":2}`) {
 			t.Fatalf("unknown keyword changed: %s", encoded)
 		}
 	})
-	t.Run("external ref", func(t *testing.T) {
-		assertSchemaErrorKind(t, json.RawMessage(`{"$ref":"https://example.test/schema"}`), "external_ref")
+	t.Run("unknown-assertion-has-validation-limitation", func(t *testing.T) {
+		schema, err := StrictOutputSchemaFromJSON(json.RawMessage(`{"type":"object","required":["name"],"properties":{"name":{"type":"string","x-must-equal":"fixed"}}}`))
+		if err != nil {
+			t.Fatal(err)
+		}
+		encoded, _ := schema.MarshalJSON()
+		if !strings.Contains(string(encoded), `"x-must-equal":"fixed"`) {
+			t.Fatalf("unknown assertion changed: %s", encoded)
+		}
 	})
-	t.Run("unresolvable ref", func(t *testing.T) {
-		assertSchemaErrorKind(t, json.RawMessage(`{"$ref":"#/$defs/missing"}`), "unresolvable_ref")
+	t.Run("dynamic-anchor-has-resolution-limitation", func(t *testing.T) {
+		schema, err := StrictOutputSchemaFromJSON(json.RawMessage(`{"$dynamicAnchor":"node","type":"object"}`))
+		if err != nil {
+			t.Fatal(err)
+		}
+		encoded, _ := schema.MarshalJSON()
+		if !strings.Contains(string(encoded), `"$dynamicAnchor":"node"`) {
+			t.Fatalf("dynamic anchor changed: %s", encoded)
+		}
+	})
+	t.Run("vocabulary-fails-closed", func(t *testing.T) {
+		assertSchemaError(t,
+			json.RawMessage(`{"$vocabulary":{"https://example.test/vocab":true},"type":"object"}`),
+			"invalid_schema", "")
+	})
+	t.Run("additional-properties-schema-preserved", func(t *testing.T) {
+		schema, err := StrictOutputSchemaFromJSON(json.RawMessage(`{"type":"object","additionalProperties":{"type":"object","maxProperties":2,"x-note":{"level":3},"properties":{"note":{"type":["string","null"]}}}}`))
+		if err != nil {
+			t.Fatal(err)
+		}
+		encoded, _ := schema.MarshalJSON()
+		if !strings.Contains(string(encoded), `"required":["note"]`) ||
+			!strings.Contains(string(encoded), `"maxProperties":2`) ||
+			!strings.Contains(string(encoded), `"x-note":{"level":3}`) {
+			t.Fatalf("nested additionalProperties schema was not normalized: %s", encoded)
+		}
+	})
+	t.Run("conditional-null-fails-closed", func(t *testing.T) {
+		assertSchemaError(t,
+			json.RawMessage(`{"type":"object","properties":{"value":{"if":{"type":"null"},"then":false,"else":true}}}`),
+			"optional_non_nullable", "/properties/value")
+	})
+	t.Run("cyclic-ref-fails-closed", func(t *testing.T) {
+		assertSchemaError(t, json.RawMessage(`{"$defs":{"node":{"$ref":"#/$defs/node"}},"$ref":"#/$defs/node"}`), "cyclic_ref", "/$defs/node/$ref")
+	})
+	t.Run("external-ref-fails-closed", func(t *testing.T) {
+		assertSchemaError(t, json.RawMessage(`{"$ref":"https://example.test/schema"}`), "external_ref", "/$ref")
+	})
+	t.Run("unresolvable-ref-fails-closed", func(t *testing.T) {
+		assertSchemaError(t, json.RawMessage(`{"$ref":"#/$defs/missing"}`), "unresolvable_ref", "/$ref")
+	})
+	t.Run("dynamic-ref-fails-closed", func(t *testing.T) {
+		assertSchemaError(t, json.RawMessage(`{"$dynamicRef":"#node"}`), "unsupported_dynamic_ref", "/$dynamicRef")
 	})
 }
 
@@ -686,6 +832,42 @@ func assertGoSchemaAccepted[T any](t *testing.T) {
 	}
 }
 
+func assertDecodedValuesEqual[T any](t *testing.T, absentJSON, nullJSON string) {
+	t.Helper()
+	var absent, explicitNull T
+	if err := json.Unmarshal([]byte(absentJSON), &absent); err != nil {
+		t.Fatal(err)
+	}
+	if err := json.Unmarshal([]byte(nullJSON), &explicitNull); err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(absent, explicitNull) {
+		t.Fatalf("absence/null decoded values differ: absent=%#v null=%#v", absent, explicitNull)
+	}
+}
+
+func assertSchemaJSONValueEqual(t *testing.T, raw json.RawMessage) {
+	t.Helper()
+	schema, err := StrictOutputSchemaFromJSON(raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	encoded, err := schema.MarshalJSON()
+	if err != nil {
+		t.Fatal(err)
+	}
+	var before, after any
+	if err := json.Unmarshal(raw, &before); err != nil {
+		t.Fatal(err)
+	}
+	if err := json.Unmarshal(encoded, &after); err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(before, after) {
+		t.Fatalf("schema JSON value changed:\nbefore: %s\nafter:  %s", raw, encoded)
+	}
+}
+
 func schemaFor[T any](t *testing.T) json.RawMessage {
 	t.Helper()
 	raw, err := llmschema.SchemaJSONFor[T]()
@@ -701,6 +883,29 @@ func assertSchemaErrorKind(t *testing.T, raw json.RawMessage, kind string) {
 	var policyErr *SchemaPolicyError
 	if !errors.As(err, &policyErr) || policyErr.Kind != kind {
 		t.Fatalf("error = %v, want SchemaPolicyError kind %s", err, kind)
+	}
+}
+
+func assertSchemaError(t *testing.T, raw json.RawMessage, kind, path string) {
+	t.Helper()
+	_, err := StrictOutputSchemaFromJSON(raw)
+	var policyErr *SchemaPolicyError
+	if !errors.As(err, &policyErr) || policyErr.Kind != kind || policyErr.Path != path {
+		t.Fatalf("error = %#v, want SchemaPolicyError kind %s at %q", policyErr, kind, path)
+	}
+
+	runner := &fakeRunner{}
+	caller, err := New(Options{Runner: runner})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = caller.CallDetailed(context.Background(), llmadapter.Request{Prompt: "must not run", OutputSchema: raw})
+	policyErr = nil
+	if !errors.As(err, &policyErr) || policyErr.Kind != kind || policyErr.Path != path {
+		t.Fatalf("Caller error = %#v, want SchemaPolicyError kind %s at %q", policyErr, kind, path)
+	}
+	if len(runner.requests) != 0 {
+		t.Fatalf("runner received %d requests after fail-closed schema error", len(runner.requests))
 	}
 }
 

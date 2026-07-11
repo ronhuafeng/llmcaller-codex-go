@@ -8,4 +8,5 @@ Describe the change and why it belongs in the Codex caller adapter.
 - [ ] Dependency changes are reflected in `THIRD_PARTY_NOTICES.md`.
 - [ ] `gofmt`, `go vet ./...`, and `go test ./...` pass.
 - [ ] The adapter still avoids business packages, schema projection ownership, and retry-loop policy.
+- [ ] Schema-policy changes were reviewed against the normative schema-equivalence and fail-closed contract and every affected compatibility-matrix row has a same-named test.
 - [ ] No credentials, private paths, transcripts, or business data were added.
