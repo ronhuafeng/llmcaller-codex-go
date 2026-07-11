@@ -6,6 +6,10 @@ This project follows Semantic Versioning.
 
 ## [Unreleased]
 
+- Defined the normative schema-equivalence and fail-closed contract, expanded
+  the compatibility matrix with same-named public-boundary tests, and documented
+  decoded-value and application-semantic limitations without promising byte
+  identity.
 - Replaced handwritten schema null-admission analysis with draft-compatible
   validator probes that preserve JSON values and fail closed before runner
   invocation when a property schema cannot be compiled or resolved.
