@@ -1,5 +1,8 @@
-// Package codexcaller adapts llmadapter typed calls to a Codex thread client.
+// Package codexcaller adapts llmadapter structured calls to exact Codex thread
+// lifecycle operations.
 //
-// It owns the Codex-specific request bridge and structured-output schema policy.
-// It does not own Go type projection, retry loops, or business semantics.
+// It owns Codex schema policy, request/result projection, exact defaults, and
+// named Codex safety profiles. Detailed and streaming paths preserve generated
+// SDK facts and partial results. The package does not own Go type projection,
+// decoding, validation, retries, transport, or business semantics.
 package codexcaller
