@@ -6,6 +6,9 @@ This project follows Semantic Versioning.
 
 ## [Unreleased]
 
+- Replaced handwritten schema null-admission analysis with draft-compatible
+  validator probes that preserve JSON values and fail closed before runner
+  invocation when a property schema cannot be compiled or resolved.
 - Enforced the named read-only ephemeral profile before every runner call by
   rejecting conflicting defaults, normalizing unset safety fields, and
   reapplying the requested policy while retaining effective-policy checks.

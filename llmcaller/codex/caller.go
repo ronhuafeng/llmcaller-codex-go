@@ -309,6 +309,9 @@ func StrictOutputSchemaFromJSON(raw json.RawMessage) (protocolv2.OutputSchema, e
 	if err := transformer.walk(root, "", nil); err != nil {
 		return protocolv2.OutputSchema{}, err
 	}
+	if _, err := compiler.Compile(schemaResourceURL); err != nil {
+		return protocolv2.OutputSchema{}, &SchemaPolicyError{Path: "", Kind: "invalid_schema", Err: err}
+	}
 	out, err := json.Marshal(root)
 	if err != nil {
 		return protocolv2.OutputSchema{}, &SchemaPolicyError{Path: "", Kind: "marshal", Err: err}
@@ -391,7 +394,11 @@ func (t schemaTransformer) walk(value any, path string, refs map[string]bool) er
 				names = append(names, name)
 			}
 			sort.Strings(names)
-			object["required"] = names
+			requiredValues := make([]any, len(names))
+			for index, name := range names {
+				requiredValues[index] = name
+			}
+			object["required"] = requiredValues
 		}
 	} else if _, present := object["properties"]; present {
 		return &SchemaPolicyError{Path: path + "/properties", Kind: "invalid_properties", Err: errors.New("properties must be an object")}

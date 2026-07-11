@@ -12,6 +12,7 @@ import (
 	"github.com/ronhuafeng/codexsdk-go/codexsdk/protocolv2"
 	"github.com/ronhuafeng/llmkit-go/llmadapter"
 	"github.com/ronhuafeng/llmkit-go/llmschema"
+	"github.com/santhosh-tekuri/jsonschema/v6"
 )
 
 type fakeRunner struct {
@@ -588,6 +589,43 @@ func TestStrictOutputSchemaUsesJSONSchemaSemanticsForNullAdmission(t *testing.T)
 
 func TestStrictOutputSchemaFailsClosedWhenNullProbeSchemaDoesNotCompile(t *testing.T) {
 	assertSchemaErrorKind(t, json.RawMessage(`{"type":"object","properties":{"x":{"type":["null",1]}}}`), "nullable_analysis")
+	assertSchemaErrorKind(t, json.RawMessage(`{"type":"object","required":["x"],"properties":{"x":{"type":["null",1]}}}`), "invalid_schema")
+}
+
+func TestStrictOutputSchemaDecisionMatchesDirectValidator(t *testing.T) {
+	propertySchemas := []string{
+		`{"type":"null"}`,
+		`{"type":"string"}`,
+		`{"allOf":[{"type":["string","null"]},{"const":null}]}`,
+		`{"anyOf":[{"type":"string"},{"enum":[null]}]}`,
+		`{"oneOf":[{}, {"type":"null"}]}`,
+		`{"not":{"enum":[null]}}`,
+		`{"if":{"type":"null"},"then":false,"else":true}`,
+	}
+
+	for _, propertySchema := range propertySchemas {
+		raw := json.RawMessage(`{"$schema":"https://json-schema.org/draft/2020-12/schema","type":"object","properties":{"x":` + propertySchema + `}}`)
+		var document any
+		decoder := json.NewDecoder(strings.NewReader(string(raw)))
+		decoder.UseNumber()
+		if err := decoder.Decode(&document); err != nil {
+			t.Fatal(err)
+		}
+		compiler := jsonschema.NewCompiler()
+		if err := compiler.AddResource("https://test.invalid/schema.json", document); err != nil {
+			t.Fatal(err)
+		}
+		property, err := compiler.Compile("https://test.invalid/schema.json#/properties/x")
+		if err != nil {
+			t.Fatal(err)
+		}
+		wantPromotion := property.Validate(nil) == nil
+		_, transformErr := StrictOutputSchemaFromJSON(raw)
+		gotPromotion := transformErr == nil
+		if gotPromotion != wantPromotion {
+			t.Errorf("property %s: promoted = %v, direct validator accepts null = %v, error = %v", propertySchema, gotPromotion, wantPromotion, transformErr)
+		}
+	}
 }
 
 func TestCallerRejectsUncertainNullAdmissionBeforeRunnerInvocation(t *testing.T) {
