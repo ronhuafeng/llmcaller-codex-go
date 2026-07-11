@@ -12,9 +12,11 @@ in dependency repositories or module archives.
 
 | Module | Version | Relationship | Provenance | License |
 | --- | --- | --- | --- | --- |
-| `github.com/ronhuafeng/llmkit-go` | `v0.1.0` | Direct | Go module declared in `go.mod`; provider-neutral typed request, schema, and decode layer. | MIT |
-| `github.com/ronhuafeng/codexsdk-go` | `v0.1.0` | Direct | Go module declared in `go.mod`; Codex app-server protocol, transport, and thread client. | MIT |
+| `github.com/ronhuafeng/llmkit-go` | `v0.2.0-rc.1` | Direct | Go module declared in `go.mod`; provider-neutral typed request, schema, decode, validation, and retry primitives. | MIT |
+| `github.com/ronhuafeng/codexsdk-go` | `v0.2.0-rc.1` | Direct | Go module declared in `go.mod`; exact Codex app-server protocol, transport, and lifecycle API. | MIT |
 | `github.com/google/jsonschema-go` | `v0.4.3` | Indirect | Go module declared as indirect in `go.mod`; JSON Schema support used by the typed schema stack. | MIT |
+| `github.com/santhosh-tekuri/jsonschema/v6` | `v6.0.2` | Indirect | Strict JSON Schema validation used by the typed schema stack. | MIT |
+| `golang.org/x/text` | `v0.14.0` | Indirect | Unicode and text support used by transitive schema dependencies. | BSD-3-Clause |
 
 ## Transitive Dependencies
 
@@ -23,7 +25,11 @@ transitive implementation details:
 
 | Module | Version | Provenance | License |
 | --- | --- | --- | --- |
+| `github.com/dlclark/regexp2` | `v1.11.0` | Listed by `GOWORK=off go list -m all`. | MIT |
 | `github.com/google/go-cmp` | `v0.7.0` | Listed by `GOWORK=off go list -m all`. | BSD-3-Clause |
+| `golang.org/x/mod` | `v0.8.0` | Listed by `GOWORK=off go list -m all`. | BSD-3-Clause |
+| `golang.org/x/sys` | `v0.5.0` | Listed by `GOWORK=off go list -m all`. | BSD-3-Clause |
+| `golang.org/x/tools` | `v0.6.0` | Listed by `GOWORK=off go list -m all`. | BSD-3-Clause |
 
 ## Maintenance
 

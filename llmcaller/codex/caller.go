@@ -1,11 +1,14 @@
 package codexcaller
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"reflect"
 	"sort"
+	"strings"
 
 	"github.com/ronhuafeng/codexsdk-go/codexsdk"
 	"github.com/ronhuafeng/codexsdk-go/codexsdk/protocolv2"
@@ -13,125 +16,640 @@ import (
 )
 
 var (
-	ErrNilThreadClient   = errors.New("llmcaller/codex: thread client is nil")
+	// ErrNilThreadRunner reports a missing or typed-nil runner.
+	ErrNilThreadRunner = errors.New("llmcaller/codex: thread runner is nil")
+	// ErrMissingSchemaJSON reports a request without an output schema.
 	ErrMissingSchemaJSON = errors.New("llmcaller/codex: output schema JSON is required")
 )
 
-type ThreadStarter interface {
-	StartThread(ctx context.Context, req codexsdk.StartThreadRequest) (codexsdk.ThreadRunResult, error)
+// ThreadRunner is the exact subset of codexsdk.ThreadRunner used by Caller.
+type ThreadRunner interface {
+	Start(context.Context, codexsdk.StartThreadRunRequest) (codexsdk.StartedThreadRun, error)
+	StartStream(context.Context, codexsdk.StartThreadRunRequest) (*codexsdk.Stream[codexsdk.StartedThreadRun], error)
 }
 
+// Options configures a Caller with exact generated Codex defaults.
 type Options struct {
-	ThreadClient      ThreadStarter
-	Model             string
-	CWD               string
-	Effort            codexsdk.ReasoningEffort
-	ApprovalPolicy    codexsdk.ApprovalPolicy
-	ApprovalsReviewer codexsdk.ApprovalsReviewer
-	Ephemeral         *bool
+	Runner   ThreadRunner
+	Defaults codexsdk.StartThreadRunRequest
+
+	profile safetyProfile
 }
 
-// ReadOnlyEphemeralOptions returns safe defaults for read-only structured calls.
-func ReadOnlyEphemeralOptions(threadClient ThreadStarter) Options {
-	return Options{
-		ThreadClient:   threadClient,
-		ApprovalPolicy: codexsdk.ApprovalPolicyNever,
-		Ephemeral:      codexsdk.Bool(true),
-	}
+// Details retains the exact Codex run behind a neutral response.
+type Details struct {
+	Run codexsdk.StartedThreadRun
 }
 
+// ProviderName returns the stable provider identity used by neutral evidence.
+func (Details) ProviderName() string { return "codex" }
+
+// Caller adapts neutral structured calls to exact Codex thread runs.
 type Caller struct {
-	threadClient      ThreadStarter
-	model             string
-	cwd               string
-	effort            codexsdk.ReasoningEffort
-	approvalPolicy    codexsdk.ApprovalPolicy
-	approvalsReviewer codexsdk.ApprovalsReviewer
-	ephemeral         *bool
+	runner   ThreadRunner
+	defaults codexsdk.StartThreadRunRequest
+	profile  safetyProfile
 }
+
+type safetyProfile uint8
+
+const profileReadOnlyEphemeral safetyProfile = 1
 
 var _ llmadapter.Caller = (*Caller)(nil)
 
-func New(options Options) *Caller {
-	return &Caller{
-		threadClient:      options.ThreadClient,
-		model:             options.Model,
-		cwd:               options.CWD,
-		effort:            options.Effort,
-		approvalPolicy:    options.ApprovalPolicy,
-		approvalsReviewer: options.ApprovalsReviewer,
-		ephemeral:         options.Ephemeral,
+// New validates options and clones mutable defaults.
+func New(options Options) (*Caller, error) {
+	if isNil(options.Runner) {
+		return nil, ErrNilThreadRunner
+	}
+	if options.Defaults.Turn.ThreadID != "" {
+		return nil, errors.New("llmcaller/codex: Defaults.Turn.ThreadID is adapter-owned")
+	}
+	if options.Defaults.Turn.Input != nil {
+		return nil, errors.New("llmcaller/codex: Defaults.Turn.Input is adapter-owned")
+	}
+	if options.Defaults.Turn.OutputSchema != nil {
+		return nil, errors.New("llmcaller/codex: Defaults.Turn.OutputSchema is adapter-owned")
+	}
+	defaults, err := cloneStartRequest(options.Defaults)
+	if err != nil {
+		return nil, fmt.Errorf("llmcaller/codex: clone defaults: %w", err)
+	}
+	return &Caller{runner: options.Runner, defaults: defaults, profile: options.profile}, nil
+}
+
+// ReadOnlyEphemeralOptions returns the named read-only, never-approve,
+// ephemeral Codex profile.
+func ReadOnlyEphemeralOptions(runner ThreadRunner) Options {
+	return Options{
+		Runner: runner,
+		Defaults: codexsdk.StartThreadRunRequest{
+			Thread: protocolv2.ThreadStartParams{
+				ApprovalPolicy: protocolv2.Value(protocolv2.NewAskForApprovalNever()),
+				Ephemeral:      protocolv2.Value(true),
+				Sandbox:        protocolv2.Value(protocolv2.SandboxModeReadOnly),
+			},
+			Turn: protocolv2.TurnStartParams{
+				ApprovalPolicy: protocolv2.Value(protocolv2.NewAskForApprovalNever()),
+				SandboxPolicy:  protocolv2.Value(protocolv2.NewSandboxPolicyReadOnly(protocolv2.SandboxPolicyReadOnly{})),
+			},
+		},
+		profile: profileReadOnlyEphemeral,
 	}
 }
 
-func (caller *Caller) Call(ctx context.Context, request llmadapter.Request) (llmadapter.Response, error) {
-	if caller == nil || caller.threadClient == nil {
-		return llmadapter.Response{}, ErrNilThreadClient
+// Call executes the detailed path and projects its available neutral facts.
+func (c *Caller) Call(ctx context.Context, request llmadapter.Request) (llmadapter.Response, error) {
+	run, runErr := c.CallDetailed(ctx, request)
+	if !hasRunEvidence(run) {
+		return llmadapter.Response{}, runErr
 	}
+	response, projectionErr := responseFromRun(run)
+	return response, errors.Join(runErr, projectionErr)
+}
+
+// CallDetailed executes a structured call and returns the exact run, including
+// partial evidence when an error also occurs.
+func (c *Caller) CallDetailed(ctx context.Context, request llmadapter.Request) (codexsdk.StartedThreadRun, error) {
+	if c == nil || isNil(c.runner) {
+		return codexsdk.StartedThreadRun{}, ErrNilThreadRunner
+	}
+	startRequest, err := c.request(request)
+	if err != nil {
+		return codexsdk.StartedThreadRun{}, err
+	}
+	run, runErr := c.runner.Start(ctx, startRequest)
+	cloned, cloneErr := cloneStartedRun(run)
+	if cloneErr != nil {
+		cloned = run
+	}
+	profileErr := c.validateProfile(cloned)
+	return cloned, errors.Join(runErr, cloneErr, profileErr)
+}
+
+// CallStream starts the same exact request through the SDK streaming path.
+func (c *Caller) CallStream(ctx context.Context, request llmadapter.Request) (*codexsdk.Stream[codexsdk.StartedThreadRun], error) {
+	if c == nil || isNil(c.runner) {
+		return nil, ErrNilThreadRunner
+	}
+	startRequest, err := c.request(request)
+	if err != nil {
+		return nil, err
+	}
+	return c.runner.StartStream(ctx, startRequest)
+}
+
+func (c *Caller) request(request llmadapter.Request) (codexsdk.StartThreadRunRequest, error) {
 	outputSchema, err := StrictOutputSchemaFromJSON(request.OutputSchema)
 	if err != nil {
-		return llmadapter.Response{}, err
+		return codexsdk.StartThreadRunRequest{}, err
 	}
-	result, err := caller.threadClient.StartThread(ctx, codexsdk.StartThreadRequest{
-		Input:             codexsdk.Text(request.Prompt),
-		OutputSchema:      outputSchema,
-		Ephemeral:         caller.ephemeral,
-		Model:             caller.model,
-		CWD:               caller.cwd,
-		Effort:            caller.effort,
-		ApprovalPolicy:    caller.approvalPolicy,
-		ApprovalsReviewer: caller.approvalsReviewer,
-	})
+	startRequest, err := cloneStartRequest(c.defaults)
 	if err != nil {
-		return llmadapter.Response{}, err
+		return codexsdk.StartThreadRunRequest{}, err
 	}
-	return llmadapter.Response{FinalResponse: result.FinalResponse}, nil
+	startRequest.Turn.ThreadID = ""
+	startRequest.Turn.Input = []protocolv2.UserInput{
+		protocolv2.NewUserInputText(protocolv2.UserInputText{Text: request.Prompt}),
+	}
+	startRequest.Turn.OutputSchema = &outputSchema
+	return startRequest, nil
 }
 
+func (c *Caller) validateProfile(run codexsdk.StartedThreadRun) error {
+	if c.profile != profileReadOnlyEphemeral || run.Start.Thread.ID == "" {
+		return nil
+	}
+	if run.Start.ApprovalPolicy.Kind() != protocolv2.AskForApprovalKindNever {
+		return errors.New("llmcaller/codex: read-only profile effective approval policy is not never")
+	}
+	if run.Start.Sandbox.Kind() != protocolv2.SandboxPolicyKindReadOnly {
+		return errors.New("llmcaller/codex: read-only profile effective sandbox is not read-only")
+	}
+	if !run.Start.Thread.Ephemeral {
+		return errors.New("llmcaller/codex: read-only profile effective thread is not ephemeral")
+	}
+	return nil
+}
+
+func responseFromRun(run codexsdk.StartedThreadRun) (llmadapter.Response, error) {
+	cloned, cloneErr := cloneStartedRun(run)
+	if cloneErr != nil {
+		cloned = run
+	}
+	response := llmadapter.Response{
+		FinalResponse: cloned.Run.FinalResponse,
+		Execution: llmadapter.ExecutionEvidence{
+			ProviderName:   "codex",
+			EffectiveModel: effectiveModel(cloned),
+			Usage:          neutralUsage(cloned.Run.Usage),
+		},
+		ProviderDetails: Details{Run: cloned},
+	}
+	return response, cloneErr
+}
+
+func hasRunEvidence(run codexsdk.StartedThreadRun) bool {
+	return !reflect.DeepEqual(run, codexsdk.StartedThreadRun{})
+}
+
+func effectiveModel(run codexsdk.StartedThreadRun) string {
+	model := run.Start.Model
+	for _, notification := range run.Run.Notifications {
+		if rerouted, ok := notification.AsModelRerouted(); ok {
+			model = rerouted.Params.ToModel
+		}
+	}
+	return model
+}
+
+func neutralUsage(usage *protocolv2.ThreadTokenUsage) *llmadapter.TokenUsage {
+	if usage == nil {
+		return nil
+	}
+	return &llmadapter.TokenUsage{
+		InputTokens:           usage.Total.InputTokens,
+		CachedInputTokens:     usage.Total.CachedInputTokens,
+		OutputTokens:          usage.Total.OutputTokens,
+		ReasoningOutputTokens: usage.Total.ReasoningOutputTokens,
+	}
+}
+
+// SchemaPolicyError identifies a stable schema-policy kind and JSON pointer.
+type SchemaPolicyError struct {
+	Path string
+	Kind string
+	Err  error
+}
+
+func (e *SchemaPolicyError) Error() string {
+	if e == nil {
+		return "<nil>"
+	}
+	return fmt.Sprintf("llmcaller/codex: schema policy %s at %s: %v", e.Kind, e.Path, e.Err)
+}
+
+func (e *SchemaPolicyError) Unwrap() error {
+	if e == nil {
+		return nil
+	}
+	return e.Err
+}
+
+// StrictOutputSchemaFromJSON applies the Codex structured-output schema policy
+// without discarding unknown JSON keyword values.
 func StrictOutputSchemaFromJSON(raw json.RawMessage) (protocolv2.OutputSchema, error) {
-	if len(raw) == 0 {
+	if len(bytes.TrimSpace(raw)) == 0 {
 		return protocolv2.OutputSchema{}, ErrMissingSchemaJSON
 	}
-	var value any
-	if err := json.Unmarshal(raw, &value); err != nil {
-		return protocolv2.OutputSchema{}, fmt.Errorf("parse Codex output schema JSON: %w", err)
-	}
-	requireAllObjectProperties(value)
-	out, err := json.Marshal(value)
+	parsed, err := protocolv2.ParseJSONValue(raw)
 	if err != nil {
-		return protocolv2.OutputSchema{}, fmt.Errorf("marshal Codex output schema JSON: %w", err)
+		return protocolv2.OutputSchema{}, &SchemaPolicyError{Path: "", Kind: "invalid_json", Err: err}
+	}
+	canonical, err := json.Marshal(parsed)
+	if err != nil {
+		return protocolv2.OutputSchema{}, &SchemaPolicyError{Path: "", Kind: "invalid_json", Err: err}
+	}
+	decoder := json.NewDecoder(bytes.NewReader(canonical))
+	decoder.UseNumber()
+	var root any
+	if err := decoder.Decode(&root); err != nil {
+		return protocolv2.OutputSchema{}, &SchemaPolicyError{Path: "", Kind: "invalid_json", Err: err}
+	}
+	transformer := schemaTransformer{root: root}
+	if err := transformer.walk(root, "", nil); err != nil {
+		return protocolv2.OutputSchema{}, err
+	}
+	out, err := json.Marshal(root)
+	if err != nil {
+		return protocolv2.OutputSchema{}, &SchemaPolicyError{Path: "", Kind: "marshal", Err: err}
 	}
 	schema, err := protocolv2.OutputSchemaFromJSON(out)
 	if err != nil {
-		return protocolv2.OutputSchema{}, fmt.Errorf("parse Codex output schema: %w", err)
+		return protocolv2.OutputSchema{}, &SchemaPolicyError{Path: "", Kind: "invalid_schema", Err: err}
 	}
 	return schema, nil
 }
 
-func requireAllObjectProperties(value any) {
+type schemaTransformer struct{ root any }
+
+func (t schemaTransformer) walk(value any, path string, refs map[string]bool) error {
 	object, ok := value.(map[string]any)
 	if !ok {
-		return
-	}
-	if properties, ok := object["properties"].(map[string]any); ok && len(properties) != 0 {
-		required := make([]string, 0, len(properties))
-		for key, property := range properties {
-			required = append(required, key)
-			requireAllObjectProperties(property)
+		if _, boolean := value.(bool); boolean {
+			return nil
 		}
-		sort.Strings(required)
-		object["required"] = required
+		return &SchemaPolicyError{Path: path, Kind: "invalid_subschema", Err: errors.New("subschema must be an object or boolean")}
 	}
-	if items, ok := object["items"]; ok {
-		requireAllObjectProperties(items)
-	}
-	for _, key := range []string{"anyOf", "oneOf", "allOf"} {
-		list, ok := object[key].([]any)
+	if refValue, exists := object["$ref"]; exists {
+		ref, ok := refValue.(string)
 		if !ok {
+			return &SchemaPolicyError{Path: path + "/$ref", Kind: "invalid_ref", Err: errors.New("$ref must be a string")}
+		}
+		if !strings.HasPrefix(ref, "#") {
+			return &SchemaPolicyError{Path: path + "/$ref", Kind: "external_ref", Err: fmt.Errorf("external reference %q is unsupported", ref)}
+		}
+		if refs[ref] {
+			return &SchemaPolicyError{Path: path + "/$ref", Kind: "cyclic_ref", Err: fmt.Errorf("cyclic reference %q", ref)}
+		}
+		resolved, err := resolveLocalRef(t.root, ref)
+		if err != nil {
+			return &SchemaPolicyError{Path: path + "/$ref", Kind: "unresolvable_ref", Err: err}
+		}
+		nextRefs := copyRefSet(refs)
+		nextRefs[ref] = true
+		if err := t.walk(resolved, refPath(ref), nextRefs); err != nil {
+			return err
+		}
+	}
+	if _, exists := object["$dynamicRef"]; exists {
+		return &SchemaPolicyError{Path: path + "/$dynamicRef", Kind: "unsupported_dynamic_ref", Err: errors.New("dynamic references are not supported by the Codex schema policy")}
+	}
+	if properties, exists := objectMap(object["properties"]); exists {
+		required, err := requiredSet(object["required"], path)
+		if err != nil {
+			return err
+		}
+		for name, property := range properties {
+			propertyPath := path + "/properties/" + escapePointer(name)
+			if err := t.walk(property, propertyPath, refs); err != nil {
+				return err
+			}
+			if !required[name] {
+				admits, err := t.admitsNull(property, map[string]bool{})
+				if err != nil {
+					return &SchemaPolicyError{Path: propertyPath, Kind: "nullable_analysis", Err: err}
+				}
+				if !admits {
+					return &SchemaPolicyError{Path: propertyPath, Kind: "optional_non_nullable", Err: errors.New("optional property does not admit null")}
+				}
+				required[name] = true
+			}
+		}
+		if len(properties) > 0 {
+			names := make([]string, 0, len(required))
+			for name := range required {
+				names = append(names, name)
+			}
+			sort.Strings(names)
+			object["required"] = names
+		}
+	} else if _, present := object["properties"]; present {
+		return &SchemaPolicyError{Path: path + "/properties", Kind: "invalid_properties", Err: errors.New("properties must be an object")}
+	}
+	for _, key := range []string{"additionalProperties", "unevaluatedProperties", "propertyNames", "additionalItems", "contains", "unevaluatedItems", "not", "if", "then", "else", "contentSchema"} {
+		if child, exists := object[key]; exists {
+			if err := t.walk(child, path+"/"+escapePointer(key), refs); err != nil {
+				return err
+			}
+		}
+	}
+	if items, exists := object["items"]; exists {
+		if list, ok := items.([]any); ok {
+			for index, child := range list {
+				if err := t.walk(child, fmt.Sprintf("%s/items/%d", path, index), refs); err != nil {
+					return err
+				}
+			}
+		} else if err := t.walk(items, path+"/items", refs); err != nil {
+			return err
+		}
+	}
+	for _, key := range []string{"properties", "patternProperties", "dependentSchemas", "$defs", "definitions"} {
+		children, exists := objectMap(object[key])
+		if !exists {
 			continue
 		}
-		for _, item := range list {
-			requireAllObjectProperties(item)
+		for name, child := range children {
+			if key == "properties" {
+				continue
+			}
+			if err := t.walk(child, path+"/"+escapePointer(key)+"/"+escapePointer(name), refs); err != nil {
+				return err
+			}
 		}
+	}
+	for _, key := range []string{"allOf", "anyOf", "oneOf", "prefixItems"} {
+		if children, exists := object[key]; exists {
+			list, ok := children.([]any)
+			if !ok {
+				return &SchemaPolicyError{Path: path + "/" + key, Kind: "invalid_subschemas", Err: errors.New("keyword must be an array")}
+			}
+			for index, child := range list {
+				if err := t.walk(child, fmt.Sprintf("%s/%s/%d", path, key, index), refs); err != nil {
+					return err
+				}
+			}
+		}
+	}
+	if dependencies, exists := objectMap(object["dependencies"]); exists {
+		for name, dependency := range dependencies {
+			if _, propertyList := dependency.([]any); propertyList {
+				continue
+			}
+			if err := t.walk(dependency, path+"/dependencies/"+escapePointer(name), refs); err != nil {
+				return err
+			}
+		}
+	} else if _, present := object["dependencies"]; present {
+		return &SchemaPolicyError{Path: path + "/dependencies", Kind: "invalid_dependencies", Err: errors.New("dependencies must be an object")}
+	}
+	return nil
+}
+
+func (t schemaTransformer) admitsNull(value any, refs map[string]bool) (bool, error) {
+	if boolean, ok := value.(bool); ok {
+		return boolean, nil
+	}
+	object, ok := value.(map[string]any)
+	if !ok {
+		return false, errors.New("subschema must be an object or boolean")
+	}
+	result := true
+	if _, exists := object["$dynamicRef"]; exists {
+		return false, errors.New("dynamic references are unsupported")
+	}
+	if refValue, exists := object["$ref"]; exists {
+		ref, ok := refValue.(string)
+		if !ok || !strings.HasPrefix(ref, "#") {
+			return false, errors.New("nullable analysis requires a resolvable local $ref")
+		}
+		if refs[ref] {
+			return false, fmt.Errorf("cyclic reference %q", ref)
+		}
+		resolved, err := resolveLocalRef(t.root, ref)
+		if err != nil {
+			return false, err
+		}
+		next := copyRefSet(refs)
+		next[ref] = true
+		result, err = t.admitsNull(resolved, next)
+		if err != nil || !result {
+			return result, err
+		}
+	}
+	if typeValue, exists := object["type"]; exists {
+		result = containsNullType(typeValue)
+	}
+	if enum, exists := object["enum"].([]any); exists {
+		result = result && containsNil(enum)
+	}
+	if constant, exists := object["const"]; exists {
+		result = result && constant == nil
+	}
+	for _, key := range []string{"allOf"} {
+		if branches, exists := object[key].([]any); exists {
+			for _, branch := range branches {
+				admits, err := t.admitsNull(branch, refs)
+				if err != nil {
+					return false, err
+				}
+				result = result && admits
+			}
+		}
+	}
+	for _, key := range []string{"anyOf", "oneOf"} {
+		if branches, exists := object[key].([]any); exists {
+			matches := 0
+			for _, branch := range branches {
+				admits, err := t.admitsNull(branch, refs)
+				if err != nil {
+					return false, err
+				}
+				if admits {
+					matches++
+				}
+			}
+			if key == "oneOf" {
+				result = result && matches == 1
+			} else {
+				result = result && matches > 0
+			}
+		}
+	}
+	if negated, exists := object["not"]; exists {
+		admits, err := t.admitsNull(negated, refs)
+		if err != nil {
+			return false, err
+		}
+		result = result && !admits
+	}
+	if condition, exists := object["if"]; exists {
+		matches, err := t.admitsNull(condition, refs)
+		if err != nil {
+			return false, err
+		}
+		branch := object["else"]
+		if matches {
+			branch = object["then"]
+		}
+		if branch != nil {
+			admits, err := t.admitsNull(branch, refs)
+			if err != nil {
+				return false, err
+			}
+			result = result && admits
+		}
+	}
+	return result, nil
+}
+
+func requiredSet(value any, path string) (map[string]bool, error) {
+	set := map[string]bool{}
+	if value == nil {
+		return set, nil
+	}
+	list, ok := value.([]any)
+	if !ok {
+		return nil, &SchemaPolicyError{Path: path + "/required", Kind: "invalid_required", Err: errors.New("required must be an array")}
+	}
+	for _, item := range list {
+		name, ok := item.(string)
+		if !ok {
+			return nil, &SchemaPolicyError{Path: path + "/required", Kind: "invalid_required", Err: errors.New("required entries must be strings")}
+		}
+		set[name] = true
+	}
+	return set, nil
+}
+
+func resolveLocalRef(root any, ref string) (any, error) {
+	if ref == "#" {
+		return root, nil
+	}
+	if !strings.HasPrefix(ref, "#/") {
+		return nil, fmt.Errorf("unsupported local reference %q", ref)
+	}
+	current := root
+	for _, encoded := range strings.Split(strings.TrimPrefix(ref, "#/"), "/") {
+		token := strings.ReplaceAll(strings.ReplaceAll(encoded, "~1", "/"), "~0", "~")
+		object, ok := current.(map[string]any)
+		if !ok {
+			return nil, fmt.Errorf("reference %q traverses a non-object", ref)
+		}
+		current, ok = object[token]
+		if !ok {
+			return nil, fmt.Errorf("reference %q does not exist", ref)
+		}
+	}
+	return current, nil
+}
+
+func objectMap(value any) (map[string]any, bool) {
+	object, ok := value.(map[string]any)
+	return object, ok
+}
+
+func containsNullType(value any) bool {
+	if text, ok := value.(string); ok {
+		return text == "null"
+	}
+	list, ok := value.([]any)
+	if !ok {
+		return false
+	}
+	for _, item := range list {
+		if item == "null" {
+			return true
+		}
+	}
+	return false
+}
+
+func containsNil(values []any) bool {
+	for _, value := range values {
+		if value == nil {
+			return true
+		}
+	}
+	return false
+}
+
+func copyRefSet(refs map[string]bool) map[string]bool {
+	copied := make(map[string]bool, len(refs)+1)
+	for ref, present := range refs {
+		copied[ref] = present
+	}
+	return copied
+}
+
+func escapePointer(token string) string {
+	return strings.ReplaceAll(strings.ReplaceAll(token, "~", "~0"), "/", "~1")
+}
+
+func refPath(ref string) string {
+	if ref == "#" {
+		return ""
+	}
+	return strings.TrimPrefix(ref, "#")
+}
+
+func cloneStartRequest(request codexsdk.StartThreadRunRequest) (codexsdk.StartThreadRunRequest, error) {
+	var cloned codexsdk.StartThreadRunRequest
+	if err := cloneGenerated(request.Thread, &cloned.Thread); err != nil {
+		return cloned, err
+	}
+	turn := request.Turn
+	nilInput := turn.Input == nil
+	if nilInput {
+		turn.Input = []protocolv2.UserInput{}
+	}
+	if err := cloneGenerated(turn, &cloned.Turn); err != nil {
+		return cloned, err
+	}
+	if nilInput {
+		cloned.Turn.Input = nil
+	}
+	return cloned, nil
+}
+
+func cloneStartedRun(run codexsdk.StartedThreadRun) (codexsdk.StartedThreadRun, error) {
+	var cloned codexsdk.StartedThreadRun
+	if !reflect.DeepEqual(run.Start, protocolv2.ThreadStartResponse{}) {
+		if err := cloneGenerated(run.Start, &cloned.Start); err != nil {
+			return cloned, err
+		}
+	}
+	cloned.Run = run.Run
+	if run.Run.Turn.ID != "" {
+		if err := cloneGenerated(run.Run.Turn, &cloned.Run.Turn); err != nil {
+			return cloned, err
+		}
+	}
+	if run.Run.Usage != nil {
+		var usage protocolv2.ThreadTokenUsage
+		if err := cloneGenerated(*run.Run.Usage, &usage); err != nil {
+			return cloned, err
+		}
+		cloned.Run.Usage = &usage
+	}
+	cloned.Run.Notifications = make([]protocolv2.ServerNotification, len(run.Run.Notifications))
+	for index := range run.Run.Notifications {
+		if err := cloneGenerated(run.Run.Notifications[index], &cloned.Run.Notifications[index]); err != nil {
+			return cloned, err
+		}
+	}
+	cloned.Run.Diagnostics = append([]codexsdk.DiagnosticRef(nil), run.Run.Diagnostics...)
+	return cloned, nil
+}
+
+func cloneGenerated(source any, destination any) error {
+	raw, err := json.Marshal(source)
+	if err != nil {
+		return err
+	}
+	return json.Unmarshal(raw, destination)
+}
+
+func isNil(value any) bool {
+	if value == nil {
+		return true
+	}
+	reflected := reflect.ValueOf(value)
+	switch reflected.Kind() {
+	case reflect.Chan, reflect.Func, reflect.Interface, reflect.Map, reflect.Pointer, reflect.Slice:
+		return reflected.IsNil()
+	default:
+		return false
 	}
 }

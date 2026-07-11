@@ -7,10 +7,16 @@ Use this checklist for tagged releases.
 - Confirm `README.md` describes the current public API and examples.
 - Confirm `CHANGELOG.md` has an entry for the release.
 - Confirm `THIRD_PARTY_NOTICES.md` matches `GOWORK=off go list -m all`.
+- Byte-compare both mirrored contract blocks with their authoritative upstream
+  plans.
+- Confirm the handwritten API allowlist test passes without update mode.
+- Run a temporary all-heads three-repository canary.
+- Run a clean real-tag canary with no `replace` or `go.work`.
 - Run `gofmt -w llmcaller internal`.
 - Run `go vet ./...`.
 - Run `go test ./...`.
 - Run `GOWORK=off go test ./...`.
+- Run `GOWORK=off go test -race ./...`.
 - Search for private paths, credentials, fixtures, and business data:
 
 ```sh
