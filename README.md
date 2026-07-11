@@ -54,8 +54,13 @@ adapter owns and rejects non-zero values for:
 - `Defaults.Turn.Input`;
 - `Defaults.Turn.OutputSchema`.
 
-`New` clones mutable defaults. All other generated fields remain caller
-controlled.
+For options returned by `ReadOnlyEphemeralOptions`, the adapter additionally
+owns thread ephemeral, sandbox, and approval fields plus turn sandbox and
+approval fields. `New` fills unset profile fields with their safe values and
+rejects explicit conflicts before a caller can be constructed. It then clones
+the normalized defaults. Every request reapplies those profile values before
+the SDK runner is invoked, while model, CWD, effort, service tier, workspace
+roots, and all other non-profile generated defaults remain caller-controlled.
 
 ## Result Paths
 
@@ -71,9 +76,13 @@ configuration remain available there. If the SDK returns a partial run and an
 error, the adapter returns both the available response evidence and the same
 error cause chain.
 
-The detailed path verifies the effective read-only, never-approve, and
-ephemeral start result. `CallStream` is an exact escape hatch: because the
-adapter does not consume or wrap the SDK stream, its caller must inspect the
+Requested-policy enforcement happens before transport for `Call`,
+`CallDetailed`, and `CallStream`: no explicitly conflicting named-profile
+defaults can reach the SDK runner. Separately, after a successful non-streaming
+start, the detailed path verifies that Codex's effective result is read-only,
+never-approve, and ephemeral. That post-execution check is retained because an
+upstream effective policy can differ from the safe request. `CallStream` still
+returns the exact stream without consuming it, so its caller must inspect the
 eventual exact result when effective-policy verification is required.
 
 ```go

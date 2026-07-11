@@ -277,6 +277,155 @@ func TestReadOnlyEphemeralProfileSetsAndVerifiesExactPolicy(t *testing.T) {
 	}
 }
 
+func TestReadOnlyEphemeralProfileRejectsConflictingDefaults(t *testing.T) {
+	runner := &fakeRunner{}
+	tests := []struct {
+		name   string
+		mutate func(*Options)
+	}{
+		{
+			name: "thread sandbox",
+			mutate: func(options *Options) {
+				options.Defaults.Thread.Sandbox = protocolv2.Value(protocolv2.SandboxModeDangerFullAccess)
+			},
+		},
+		{
+			name: "thread approval",
+			mutate: func(options *Options) {
+				options.Defaults.Thread.ApprovalPolicy = protocolv2.Value(protocolv2.NewAskForApprovalOnRequest())
+			},
+		},
+		{
+			name: "thread ephemeral",
+			mutate: func(options *Options) {
+				options.Defaults.Thread.Ephemeral = protocolv2.Value(false)
+			},
+		},
+		{
+			name: "turn sandbox",
+			mutate: func(options *Options) {
+				options.Defaults.Turn.SandboxPolicy = protocolv2.Value(protocolv2.NewSandboxPolicyWorkspaceWrite(protocolv2.SandboxPolicyWorkspaceWrite{}))
+			},
+		},
+		{
+			name: "turn approval",
+			mutate: func(options *Options) {
+				options.Defaults.Turn.ApprovalPolicy = protocolv2.Value(protocolv2.NewAskForApprovalOnRequest())
+			},
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			options := ReadOnlyEphemeralOptions(runner)
+			test.mutate(&options)
+			if _, err := New(options); err == nil {
+				t.Fatal("New accepted conflicting profile default")
+			}
+			if len(runner.requests) != 0 || len(runner.streamRequests) != 0 {
+				t.Fatalf("runner invoked: starts=%d streams=%d", len(runner.requests), len(runner.streamRequests))
+			}
+		})
+	}
+}
+
+func TestReadOnlyEphemeralProfileNormalizesUnsetDefaultsAndPreservesExactDefaults(t *testing.T) {
+	runner := &fakeRunner{result: validStartedRun("ok", "gpt")}
+	options := ReadOnlyEphemeralOptions(runner)
+	options.Defaults.Thread.Ephemeral = nil
+	options.Defaults.Thread.Sandbox = nil
+	options.Defaults.Thread.ApprovalPolicy = nil
+	options.Defaults.Turn.SandboxPolicy = nil
+	options.Defaults.Turn.ApprovalPolicy = nil
+	options.Defaults.Thread.Model = protocolv2.Value("gpt-request")
+	options.Defaults.Thread.CWD = protocolv2.Value("/workspace/project")
+	options.Defaults.Thread.ServiceTier = protocolv2.Value("flex")
+	options.Defaults.Thread.RuntimeWorkspaceRoots = protocolv2.Value([]string{"/workspace"})
+	options.Defaults.Turn.Effort = protocolv2.Value(protocolv2.ReasoningEffort("high"))
+
+	caller, err := New(options)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := caller.CallDetailed(context.Background(), validRequest()); err != nil {
+		t.Fatal(err)
+	}
+	request := runner.requests[0]
+	assertReadOnlyEphemeralRequest(t, request)
+	if request.Thread.Model == nil || request.Thread.Model.Value == nil || *request.Thread.Model.Value != "gpt-request" ||
+		request.Thread.CWD == nil || request.Thread.CWD.Value == nil || *request.Thread.CWD.Value != "/workspace/project" ||
+		request.Thread.ServiceTier == nil || request.Thread.ServiceTier.Value == nil || *request.Thread.ServiceTier.Value != "flex" ||
+		request.Thread.RuntimeWorkspaceRoots == nil || request.Thread.RuntimeWorkspaceRoots.Value == nil || !reflect.DeepEqual(*request.Thread.RuntimeWorkspaceRoots.Value, []string{"/workspace"}) ||
+		request.Turn.Effort == nil || request.Turn.Effort.Value == nil || *request.Turn.Effort.Value != protocolv2.ReasoningEffort("high") {
+		t.Fatalf("non-profile exact defaults changed: %#v %#v", request.Thread, request.Turn)
+	}
+}
+
+func TestReadOnlyEphemeralProfileReappliesSafeRequestOnEveryCallPath(t *testing.T) {
+	tests := []struct {
+		name string
+		call func(*Caller) error
+	}{
+		{name: "Call", call: func(caller *Caller) error {
+			_, err := caller.Call(context.Background(), validRequest())
+			return err
+		}},
+		{name: "CallDetailed", call: func(caller *Caller) error {
+			_, err := caller.CallDetailed(context.Background(), validRequest())
+			return err
+		}},
+		{name: "CallStream", call: func(caller *Caller) error {
+			_, err := caller.CallStream(context.Background(), validRequest())
+			return err
+		}},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			runner := &fakeRunner{result: validStartedRun("unsafe", "gpt")}
+			caller, err := New(ReadOnlyEphemeralOptions(runner))
+			if err != nil {
+				t.Fatal(err)
+			}
+			caller.defaults.Thread.Ephemeral = protocolv2.Value(false)
+			caller.defaults.Thread.Sandbox = protocolv2.Value(protocolv2.SandboxModeDangerFullAccess)
+			caller.defaults.Thread.ApprovalPolicy = protocolv2.Value(protocolv2.NewAskForApprovalOnRequest())
+			caller.defaults.Turn.SandboxPolicy = protocolv2.Value(protocolv2.NewSandboxPolicyWorkspaceWrite(protocolv2.SandboxPolicyWorkspaceWrite{}))
+			caller.defaults.Turn.ApprovalPolicy = protocolv2.Value(protocolv2.NewAskForApprovalOnRequest())
+			if err := test.call(caller); err != nil {
+				t.Fatalf("call failed after request profile reapplication: %v", err)
+			}
+			if len(runner.requests)+len(runner.streamRequests) != 1 {
+				t.Fatalf("runner invocations: starts=%d streams=%d", len(runner.requests), len(runner.streamRequests))
+			}
+			if len(runner.requests) == 1 {
+				assertReadOnlyEphemeralRequest(t, runner.requests[0])
+			} else {
+				assertReadOnlyEphemeralRequest(t, runner.streamRequests[0])
+			}
+		})
+	}
+}
+
+func assertReadOnlyEphemeralRequest(t *testing.T, request codexsdk.StartThreadRunRequest) {
+	t.Helper()
+	if request.Thread.Ephemeral == nil || request.Thread.Ephemeral.Value == nil || !*request.Thread.Ephemeral.Value {
+		t.Fatalf("thread ephemeral = %#v", request.Thread.Ephemeral)
+	}
+	if request.Thread.Sandbox == nil || request.Thread.Sandbox.Value == nil || *request.Thread.Sandbox.Value != protocolv2.SandboxModeReadOnly {
+		t.Fatalf("thread sandbox = %#v", request.Thread.Sandbox)
+	}
+	if request.Thread.ApprovalPolicy == nil || request.Thread.ApprovalPolicy.Value == nil || request.Thread.ApprovalPolicy.Value.Kind() != protocolv2.AskForApprovalKindNever {
+		t.Fatalf("thread approval = %#v", request.Thread.ApprovalPolicy)
+	}
+	if request.Turn.SandboxPolicy == nil || request.Turn.SandboxPolicy.Value == nil || request.Turn.SandboxPolicy.Value.Kind() != protocolv2.SandboxPolicyKindReadOnly {
+		t.Fatalf("turn sandbox = %#v", request.Turn.SandboxPolicy)
+	}
+	if request.Turn.ApprovalPolicy == nil || request.Turn.ApprovalPolicy.Value == nil || request.Turn.ApprovalPolicy.Value.Kind() != protocolv2.AskForApprovalKindNever {
+		t.Fatalf("turn approval = %#v", request.Turn.ApprovalPolicy)
+	}
+}
+
 func TestCallerWorksThroughLLMAdapterDetailedPath(t *testing.T) {
 	runner := &fakeRunner{result: validStartedRun(`{"answer":true}`, "gpt")}
 	caller, err := New(Options{Runner: runner})

@@ -6,6 +6,10 @@ This project follows Semantic Versioning.
 
 ## [Unreleased]
 
+- Enforced the named read-only ephemeral profile before every runner call by
+  rejecting conflicting defaults, normalizing unset safety fields, and
+  reapplying the requested policy while retaining effective-policy checks.
+
 ## [0.2.0] - 2026-07-11
 
 - Replaced projected Codex options with exact `StartThreadRunRequest` defaults
