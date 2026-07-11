@@ -71,6 +71,12 @@ func New(options Options) (*Caller, error) {
 	if options.Defaults.Turn.OutputSchema != nil {
 		return nil, errors.New("llmcaller/codex: Defaults.Turn.OutputSchema is adapter-owned")
 	}
+	if options.profile == profileReadOnlyEphemeral {
+		if err := validateReadOnlyEphemeralProfile(options.Defaults); err != nil {
+			return nil, err
+		}
+		enforceReadOnlyEphemeralProfile(&options.Defaults)
+	}
 	defaults, err := cloneStartRequest(options.Defaults)
 	if err != nil {
 		return nil, fmt.Errorf("llmcaller/codex: clone defaults: %w", err)
@@ -79,7 +85,9 @@ func New(options Options) (*Caller, error) {
 }
 
 // ReadOnlyEphemeralOptions returns the named read-only, never-approve,
-// ephemeral Codex profile.
+// ephemeral Codex profile. New rejects conflicting profile-owned defaults,
+// fills unset profile fields, and reapplies the profile before each runner
+// invocation.
 func ReadOnlyEphemeralOptions(runner ThreadRunner) Options {
 	return Options{
 		Runner: runner,
@@ -148,12 +156,42 @@ func (c *Caller) request(request llmadapter.Request) (codexsdk.StartThreadRunReq
 	if err != nil {
 		return codexsdk.StartThreadRunRequest{}, err
 	}
+	if c.profile == profileReadOnlyEphemeral {
+		enforceReadOnlyEphemeralProfile(&startRequest)
+	}
 	startRequest.Turn.ThreadID = ""
 	startRequest.Turn.Input = []protocolv2.UserInput{
 		protocolv2.NewUserInputText(protocolv2.UserInputText{Text: request.Prompt}),
 	}
 	startRequest.Turn.OutputSchema = &outputSchema
 	return startRequest, nil
+}
+
+func validateReadOnlyEphemeralProfile(defaults codexsdk.StartThreadRunRequest) error {
+	if defaults.Thread.Ephemeral != nil && defaults.Thread.Ephemeral.Value != nil && !*defaults.Thread.Ephemeral.Value {
+		return errors.New("llmcaller/codex: read-only profile Defaults.Thread.Ephemeral must be true")
+	}
+	if defaults.Thread.Sandbox != nil && defaults.Thread.Sandbox.Value != nil && *defaults.Thread.Sandbox.Value != protocolv2.SandboxModeReadOnly {
+		return errors.New("llmcaller/codex: read-only profile Defaults.Thread.Sandbox must be read-only")
+	}
+	if defaults.Thread.ApprovalPolicy != nil && defaults.Thread.ApprovalPolicy.Value != nil && defaults.Thread.ApprovalPolicy.Value.Kind() != protocolv2.AskForApprovalKindNever {
+		return errors.New("llmcaller/codex: read-only profile Defaults.Thread.ApprovalPolicy must be never")
+	}
+	if defaults.Turn.SandboxPolicy != nil && defaults.Turn.SandboxPolicy.Value != nil && defaults.Turn.SandboxPolicy.Value.Kind() != protocolv2.SandboxPolicyKindReadOnly {
+		return errors.New("llmcaller/codex: read-only profile Defaults.Turn.SandboxPolicy must be read-only")
+	}
+	if defaults.Turn.ApprovalPolicy != nil && defaults.Turn.ApprovalPolicy.Value != nil && defaults.Turn.ApprovalPolicy.Value.Kind() != protocolv2.AskForApprovalKindNever {
+		return errors.New("llmcaller/codex: read-only profile Defaults.Turn.ApprovalPolicy must be never")
+	}
+	return nil
+}
+
+func enforceReadOnlyEphemeralProfile(request *codexsdk.StartThreadRunRequest) {
+	request.Thread.Ephemeral = protocolv2.Value(true)
+	request.Thread.Sandbox = protocolv2.Value(protocolv2.SandboxModeReadOnly)
+	request.Thread.ApprovalPolicy = protocolv2.Value(protocolv2.NewAskForApprovalNever())
+	request.Turn.SandboxPolicy = protocolv2.Value(protocolv2.NewSandboxPolicyReadOnly(protocolv2.SandboxPolicyReadOnly{}))
+	request.Turn.ApprovalPolicy = protocolv2.Value(protocolv2.NewAskForApprovalNever())
 }
 
 func (c *Caller) validateProfile(run codexsdk.StartedThreadRun) error {
