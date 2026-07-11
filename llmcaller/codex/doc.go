@@ -15,8 +15,11 @@
 // schema admits null. That narrowing preserves ordinary Go decoded values only
 // when absence and explicit null decode alike; custom unmarshalers,
 // json.RawMessage, presence-sensitive domain meaning, and arbitrary application
-// semantic equivalence are outside the guarantee. Unsupported or uncertain
-// schema shapes fail closed with a stable SchemaPolicyError kind and JSON
-// Pointer path before a Caller invokes its runner. Serialization is not
+// semantic equivalence are outside the guarantee. Unprovable null admission and
+// unsupported references, draft identifiers, or vocabulary declarations fail
+// closed with a stable SchemaPolicyError kind and JSON Pointer path before a
+// Caller invokes its runner. Retaining a boolean schema, unknown keyword, or
+// lone dynamic anchor does not guarantee Codex acceptance or unsupported
+// assertion and dynamic-resolution semantics. Serialization is not
 // byte-preserving.
 package codexcaller
