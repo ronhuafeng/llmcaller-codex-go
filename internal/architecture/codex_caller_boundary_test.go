@@ -69,6 +69,7 @@ func contractBlock(t *testing.T, document []byte, name string) []byte {
 var allowedExternalImportPrefixes = []string{
 	"github.com/ronhuafeng/llmkit-go",
 	"github.com/ronhuafeng/codexsdk-go",
+	"github.com/santhosh-tekuri/jsonschema/v6",
 }
 
 var forbiddenImportPrefixes = []string{
