@@ -22,6 +22,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
       - uses: actions/setup-go@v6
         with:
           go-version: stable
@@ -37,6 +39,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
       - uses: actions/setup-go@v6
         with:
           go-version: "1.23.x"
@@ -48,6 +52,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
       - uses: actions/setup-go@v6
         with:
           go-version-file: go.mod
@@ -59,6 +65,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
       - uses: actions/setup-go@v6
         with:
           go-version-file: go.mod
@@ -74,6 +82,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
       - uses: actions/setup-go@v6
         with:
           go-version-file: go.mod
@@ -85,14 +95,18 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
       - uses: actions/setup-go@v6
         with:
           go-version-file: go.mod
           cache: true
       - name: Install exact head and compile outside checkout
+        env:
+          HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
         run: |
           module="github.com/ronhuafeng/llmcaller-codex-go"
-          version="$(go list -m -f '{{.Version}}' "$module@${GITHUB_SHA}")"
+          version="$(go list -m -f '{{.Version}}' "$module@${HEAD_SHA}")"
           test -n "$version"
           cd "$(mktemp -d)"
           go mod init example.test/fresh-consumer
@@ -105,6 +119,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
       - uses: actions/setup-go@v6
         with:
           go-version-file: go.mod
@@ -117,6 +133,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
       - uses: actions/setup-go@v6
         with:
           go-version: stable
