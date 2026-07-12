@@ -2,6 +2,7 @@ package architecture
 
 import (
 	"bytes"
+	"encoding/json"
 	"go/build"
 	"go/parser"
 	"go/token"
@@ -41,13 +42,26 @@ func TestMirroredUpstreamContracts(t *testing.T) {
 
 func moduleDir(t *testing.T, module string) string {
 	t.Helper()
-	command := exec.Command("go", "list", "-m", "-f", "{{.Dir}}", module)
+	command := exec.Command("go", "mod", "download", "-json", module)
 	command.Env = append(os.Environ(), "GOWORK=off")
 	output, err := command.Output()
 	if err != nil {
 		t.Fatalf("resolve %s: %v", module, err)
 	}
-	return strings.TrimSpace(string(output))
+	var downloaded struct {
+		Dir   string
+		Error string
+	}
+	if err := json.Unmarshal(output, &downloaded); err != nil {
+		t.Fatalf("decode resolved module %s: %v", module, err)
+	}
+	if downloaded.Error != "" {
+		t.Fatalf("resolve %s: %s", module, downloaded.Error)
+	}
+	if downloaded.Dir == "" {
+		t.Fatalf("resolve %s: module directory is empty", module)
+	}
+	return downloaded.Dir
 }
 
 func contractBlock(t *testing.T, document []byte, name string) []byte {
