@@ -6,6 +6,8 @@ This project follows Semantic Versioning.
 
 ## [Unreleased]
 
+## [0.3.0-rc.1] - 2026-07-13
+
 - Defined the normative schema-equivalence and fail-closed contract, expanded
   the compatibility matrix with same-named public-boundary tests, and documented
   decoded-value and application-semantic limitations without promising byte
@@ -16,6 +18,13 @@ This project follows Semantic Versioning.
 - Enforced the named read-only ephemeral profile before every runner call by
   rejecting conflicting defaults, normalizing unset safety fields, and
   reapplying the requested policy while retaining effective-policy checks.
+- Adapted the caller and complete three-layer canary to the concrete SDK root
+  client while preserving the narrow consumer-owned `ThreadRunner` boundary.
+- Strengthened canary coverage for accepted evidence after transport failure,
+  pending and live notification ordering, attribution, shutdown, and first-cause
+  preservation.
+- Requires `llmkit-go v0.3.0-rc.1` and `codexsdk-go v0.3.0-rc.1` from their
+  published module tags.
 
 ## [0.2.0] - 2026-07-11
 
