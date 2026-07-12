@@ -145,4 +145,5 @@ jobs:
           LLMCALLER_FULL_CANARY: "1"
         run: |
           go mod verify
+          GOWORK=off go test ./llmcaller/codex -run '^TestThreeLayerCanaryFull/backpressure_closes_with_stable_typed_cause$' -count=100
           GOWORK=off go test ./llmcaller/codex -run '^TestThreeLayerCanary' -count=1 -v
