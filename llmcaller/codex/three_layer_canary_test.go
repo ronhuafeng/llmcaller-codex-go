@@ -52,6 +52,24 @@ func TestThreeLayerCanaryFast(t *testing.T) {
 		if details.Run.Run.Turn.Status != protocolv2.TurnStatusFailed || len(details.Run.Run.Notifications) < 2 {
 			t.Fatalf("partial exact details = %#v", details.Run)
 		}
+		var turnErr *codexsdk.TurnError
+		if !errors.Is(err, codexsdk.ErrTurnFailed) || !errors.As(err, &turnErr) {
+			t.Fatalf("error=%v, want ErrTurnFailed and TurnError", err)
+		}
+	})
+
+	t.Run("turn start failure retains thread start evidence", func(t *testing.T) {
+		client, caller := canaryCaller(t, "turn-start-failure", codexsdk.ClientOptions{})
+		defer closeCanary(t, client)
+		response, err := caller.Call(context.Background(), validRequest())
+		var protocolErr *codexsdk.ProtocolError
+		if err == nil || !errors.As(err, &protocolErr) || protocolErr.Method != protocolv2.MethodTurnStart {
+			t.Fatalf("response=%#v err=%v, want turn/start ProtocolError", response, err)
+		}
+		details := response.ProviderDetails.(Details)
+		if details.Run.Start.Thread.ID != "thread-1" || details.Run.Run.Turn.ID != "" {
+			t.Fatalf("post-thread/start evidence = %#v", details.Run)
+		}
 	})
 
 	t.Run("typed decode failure retains successful call evidence", func(t *testing.T) {
@@ -134,6 +152,33 @@ func TestThreeLayerCanaryFull(t *testing.T) {
 		}
 	})
 
+	t.Run("server request without handler declines safely", func(t *testing.T) {
+		client, caller := canaryCaller(t, "approval", codexsdk.ClientOptions{})
+		defer closeCanary(t, client)
+		run, err := caller.CallDetailed(context.Background(), validRequest())
+		if err != nil || run.Run.Turn.Status != protocolv2.TurnStatusCompleted {
+			t.Fatalf("run=%#v err=%v", run, err)
+		}
+	})
+
+	t.Run("pending and live notification order is conserved", func(t *testing.T) {
+		client, caller := canaryCaller(t, "pending-live", codexsdk.ClientOptions{})
+		defer closeCanary(t, client)
+		run, err := caller.CallDetailed(context.Background(), validRequest())
+		if err != nil {
+			t.Fatal(err)
+		}
+		want := []protocolv2.ServerNotificationKind{
+			protocolv2.ServerNotificationKindItemCompleted,
+			protocolv2.ServerNotificationKindModelRerouted,
+			protocolv2.ServerNotificationKindThreadTokenUsageUpdated,
+			protocolv2.ServerNotificationKindTurnCompleted,
+		}
+		if got := notificationKinds(run.Run.Notifications); !reflect.DeepEqual(got, want) {
+			t.Fatalf("notification order=%v want=%v", got, want)
+		}
+	})
+
 	t.Run("notification attribution excludes another turn", func(t *testing.T) {
 		client, caller := canaryCaller(t, "foreign-notification", codexsdk.ClientOptions{})
 		defer closeCanary(t, client)
@@ -204,6 +249,21 @@ func TestThreeLayerCanaryFull(t *testing.T) {
 		}
 		if !errors.Is(stream.Err(), codexsdk.ErrClientClosed) {
 			t.Fatalf("stream error=%v", stream.Err())
+		}
+	})
+
+	t.Run("handler failure remains the client first cause", func(t *testing.T) {
+		handlerCause := errors.New("canary handler failure")
+		options := codexsdk.ClientOptions{ServerRequestHandler: func(context.Context, protocolv2.ServerRequest) (codexsdk.ServerRequestResponse, error) {
+			return codexsdk.ServerRequestResponse{}, handlerCause
+		}}
+		client, caller := canaryCaller(t, "approval-hang", options)
+		response, err := caller.Call(context.Background(), validRequest())
+		if !errors.Is(err, codexsdk.ErrHandlerFailed) || !errors.Is(err, handlerCause) {
+			t.Fatalf("response=%#v err=%v", response, err)
+		}
+		if closeErr := client.Close(); !errors.Is(closeErr, codexsdk.ErrHandlerFailed) || !errors.Is(closeErr, handlerCause) {
+			t.Fatalf("Close error=%v, want handler first cause", closeErr)
 		}
 	})
 }
@@ -283,6 +343,13 @@ func runThreeLayerFakeAppServer(scenario string) {
 			if params["approvalPolicy"] != "never" {
 				os.Exit(3)
 			}
+			if scenario == "turn-start-failure" {
+				canarySend(map[string]any{"id": id, "error": map[string]any{"code": -32000, "message": "turn rejected"}})
+				continue
+			}
+			if scenario == "pending-live" {
+				canaryItem("thread-1", "turn-1", `{"answer":true}`)
+			}
 			canarySend(map[string]any{"id": id, "result": map[string]any{"turn": map[string]any{"id": "turn-1", "items": []any{}, "status": "inProgress"}}})
 			switch scenario {
 			case "approval", "approval-hang":
@@ -301,6 +368,11 @@ func runThreeLayerFakeAppServer(scenario string) {
 				for i := 0; i < 8; i++ {
 					canarySend(map[string]any{"method": "model/rerouted", "params": map[string]any{"threadId": "thread-1", "turnId": "turn-1", "fromModel": fmt.Sprint(i), "toModel": fmt.Sprint(i + 1), "reason": "highRiskCyberActivity"}})
 				}
+			case "pending-live":
+				canarySend(map[string]any{"method": "model/rerouted", "params": map[string]any{"threadId": "thread-1", "turnId": "turn-1", "fromModel": "canary-start", "toModel": "canary-rerouted", "reason": "highRiskCyberActivity"}})
+				usage := map[string]any{"cachedInputTokens": 10, "inputTokens": 30, "outputTokens": 20, "reasoningOutputTokens": 5, "totalTokens": 50}
+				canarySend(map[string]any{"method": "thread/tokenUsage/updated", "params": map[string]any{"threadId": "thread-1", "turnId": "turn-1", "tokenUsage": map[string]any{"last": usage, "total": usage}}})
+				canarySend(map[string]any{"method": "turn/completed", "params": map[string]any{"threadId": "thread-1", "turn": map[string]any{"id": "turn-1", "items": []any{canaryAgentItem(`{"answer":true}`)}, "status": "completed"}}})
 			default:
 				canaryComplete(scenario)
 			}
