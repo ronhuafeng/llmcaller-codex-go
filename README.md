@@ -12,7 +12,7 @@ protocol, streaming, and thread lifecycle belong to `codexsdk-go`.
 ## Install
 
 ```sh
-go get github.com/ronhuafeng/llmcaller-codex-go@v0.3.0-rc.1
+go get github.com/ronhuafeng/llmcaller-codex-go@v0.3.0-rc.2
 ```
 
 Go 1.23 or newer is required.

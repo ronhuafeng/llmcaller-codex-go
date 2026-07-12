@@ -6,6 +6,13 @@ This project follows Semantic Versioning.
 
 ## [Unreleased]
 
+## [0.3.0-rc.2] - 2026-07-13
+
+- Updated `codexsdk-go` to `v0.3.0-rc.2` so pending notifications are
+  delivered before live notifications while preserving per-source order.
+- Retains `llmkit-go v0.3.0-rc.1` and all caller API, schema, safety, and
+  evidence contracts from `v0.3.0-rc.1`.
+
 ## [0.3.0-rc.1] - 2026-07-13
 
 - Defined the normative schema-equivalence and fail-closed contract, expanded
