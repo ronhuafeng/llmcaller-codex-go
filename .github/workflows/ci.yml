@@ -5,6 +5,13 @@ on:
     branches: ["main"]
   pull_request:
     branches: ["main"]
+  workflow_dispatch:
+    inputs:
+      full_canary:
+        description: Run the full three-layer release canary
+        required: true
+        type: boolean
+        default: true
 
 permissions:
   contents: read
@@ -103,3 +110,20 @@ jobs:
           go-version-file: go.mod
           cache: true
       - run: GOWORK=off go test ./llmcaller/codex -run '^TestThreeLayerCanaryFast$' -count=1 -v
+
+  full-canary:
+    if: github.event_name == 'workflow_dispatch' && inputs.full_canary
+    name: Full canary
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-go@v6
+        with:
+          go-version: stable
+          cache: true
+      - name: Verify released modules and all invariant groups
+        env:
+          LLMCALLER_FULL_CANARY: "1"
+        run: |
+          go mod verify
+          GOWORK=off go test ./llmcaller/codex -run '^TestThreeLayerCanary' -count=1 -v
