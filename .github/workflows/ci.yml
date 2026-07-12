@@ -112,6 +112,7 @@ jobs:
           go mod init example.test/fresh-consumer
           go get "$module@$version"
           printf 'package consumer\nimport _ "github.com/ronhuafeng/llmcaller-codex-go/llmcaller/codex"\n' > consumer.go
+          go mod tidy
           GOWORK=off go test ./...
 
   fast-canary:
