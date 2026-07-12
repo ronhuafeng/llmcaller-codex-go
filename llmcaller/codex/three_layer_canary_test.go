@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"reflect"
 	"strings"
@@ -45,7 +46,7 @@ func TestThreeLayerCanaryFast(t *testing.T) {
 		client, caller := canaryCaller(t, "provider-failure", codexsdk.ClientOptions{})
 		defer client.Close()
 		response, err := caller.Call(context.Background(), validRequest())
-		if err == nil || response.Execution.ProviderName != "codex" {
+		if err == nil || response.FinalResponse != "partial" || response.Execution.ProviderName != "codex" || response.Execution.EffectiveModel != "canary-start" {
 			t.Fatalf("response=%#v err=%v", response, err)
 		}
 		details := response.ProviderDetails.(Details)
@@ -101,13 +102,15 @@ func TestThreeLayerCanaryFull(t *testing.T) {
 	t.Run("transport failure retains accepted partial evidence and first cause", func(t *testing.T) {
 		client, caller := canaryCaller(t, "transport-failure", codexsdk.ClientOptions{})
 		response, err := caller.Call(context.Background(), validRequest())
-		if err == nil || !strings.Contains(err.Error(), "invalid app-server JSON-RPC") {
+		if err == nil || !strings.Contains(err.Error(), "invalid app-server JSON-RPC") || !errors.Is(err, io.EOF) {
 			t.Fatalf("response=%#v err=%v", response, err)
 		}
-		if len(response.ProviderDetails.(Details).Run.Run.Notifications) != 1 {
+		details := response.ProviderDetails.(Details)
+		accepted, _ := json.Marshal(details.Run.Run.Notifications)
+		if response.Execution.ProviderName != "codex" || response.Execution.EffectiveModel != "canary-start" || details.Run.Start.Thread.ID != "thread-1" || details.Run.Run.Turn.ID != "turn-1" || len(details.Run.Run.Notifications) != 1 || !strings.Contains(string(accepted), `"text":"partial"`) {
 			t.Fatalf("transport failure erased partial evidence: %#v", response)
 		}
-		if closeErr := client.Close(); closeErr == nil || closeErr.Error() != err.Error() {
+		if closeErr := client.Close(); closeErr == nil || closeErr.Error() != err.Error() || !errors.Is(closeErr, io.EOF) {
 			t.Fatalf("Close error=%v, first cause=%v", closeErr, err)
 		}
 	})
@@ -378,6 +381,10 @@ func runThreeLayerFakeAppServer(scenario string) {
 			}
 		default:
 			if method == "" && scenario == "approval" {
+				result, _ := message["result"].(map[string]any)
+				if result["decision"] != "decline" {
+					os.Exit(4)
+				}
 				canaryComplete("success")
 			}
 		}
