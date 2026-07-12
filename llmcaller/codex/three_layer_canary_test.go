@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path/filepath"
 	"reflect"
 	"strings"
 	"sync"
@@ -199,9 +200,15 @@ func TestThreeLayerCanaryFull(t *testing.T) {
 
 	t.Run("backpressure closes with stable typed cause", func(t *testing.T) {
 		started := make(chan struct{})
+		workdir := t.TempDir()
+		startedPath := filepath.Join(workdir, canaryOverflowHandlerStarted)
 		options := codexsdk.ClientOptions{
+			CWD:                       workdir,
 			NotificationQueueCapacity: 1,
 			ServerNotificationHandler: func(ctx context.Context, _ protocolv2.ServerNotification) error {
+				if err := os.WriteFile(startedPath, nil, 0o600); err != nil {
+					return err
+				}
 				select {
 				case <-started:
 				default:
@@ -278,7 +285,9 @@ type canaryClient interface {
 
 func canaryCaller(t *testing.T, scenario string, options codexsdk.ClientOptions) (canaryClient, *Caller) {
 	t.Helper()
-	options.CWD = t.TempDir()
+	if options.CWD == "" {
+		options.CWD = t.TempDir()
+	}
 	options.Command = []string{os.Args[0], "-test.run=TestThreeLayerFakeAppServer", "--", scenario}
 	client, err := codexsdk.New(options)
 	if err != nil {
@@ -291,6 +300,8 @@ func canaryCaller(t *testing.T, scenario string, options codexsdk.ClientOptions)
 	}
 	return client, caller
 }
+
+const canaryOverflowHandlerStarted = "overflow-handler-started"
 
 func closeCanary(t *testing.T, client canaryClient) {
 	t.Helper()
@@ -368,6 +379,10 @@ func runThreeLayerFakeAppServer(scenario string) {
 				canarySend(map[string]any{"method": "model/rerouted", "params": map[string]any{"threadId": "thread-1", "turnId": "turn-foreign", "fromModel": "foreign-a", "toModel": "foreign-b", "reason": "highRiskCyberActivity"}})
 				canaryComplete("success")
 			case "overflow":
+				canarySend(map[string]any{"method": "model/rerouted", "params": map[string]any{"threadId": "thread-1", "turnId": "turn-1", "fromModel": "initial", "toModel": "admitted", "reason": "highRiskCyberActivity"}})
+				if !canaryWaitForFile(canaryOverflowHandlerStarted, 5*time.Second) {
+					os.Exit(5)
+				}
 				for i := 0; i < 8; i++ {
 					canarySend(map[string]any{"method": "model/rerouted", "params": map[string]any{"threadId": "thread-1", "turnId": "turn-1", "fromModel": fmt.Sprint(i), "toModel": fmt.Sprint(i + 1), "reason": "highRiskCyberActivity"}})
 				}
@@ -386,6 +401,17 @@ func runThreeLayerFakeAppServer(scenario string) {
 			}
 		}
 	}
+}
+
+func canaryWaitForFile(path string, timeout time.Duration) bool {
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
+		if _, err := os.Stat(path); err == nil {
+			return true
+		}
+		time.Sleep(time.Millisecond)
+	}
+	return false
 }
 
 func canaryThreadStart() map[string]any {
