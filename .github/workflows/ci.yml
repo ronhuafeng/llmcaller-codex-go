@@ -10,37 +10,96 @@ permissions:
   contents: read
 
 jobs:
-  test:
+  go:
     name: Go
     runs-on: ubuntu-latest
-
     steps:
-      - name: Check out
-        uses: actions/checkout@v6
+      - uses: actions/checkout@v6
+      - uses: actions/setup-go@v6
+        with:
+          go-version: stable
+          cache: true
+      - run: go mod download
+      - name: Formatting
+        run: test -z "$(gofmt -l $(git ls-files '*.go'))"
+      - run: go vet ./...
+      - run: go test ./...
 
-      - name: Set up Go
-        uses: actions/setup-go@v6
+  minimum-go:
+    name: Minimum Go
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-go@v6
+        with:
+          go-version: "1.23.x"
+          cache: true
+      - run: GOTOOLCHAIN=local GOWORK=off go test ./...
+
+  race:
+    name: Race
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-go@v6
         with:
           go-version-file: go.mod
           cache: true
+      - run: GOWORK=off go test -race ./...
 
-      - name: Download modules
-        run: go mod download
+  module-hygiene:
+    name: Module hygiene
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+          cache: true
+      - run: |
+          GOWORK=off go mod tidy
+          git diff --exit-code -- go.mod go.sum
+          ! grep -Eq '^(replace|exclude) ' go.mod
+          test ! -e go.work
 
-      - name: Check formatting
+  contracts:
+    name: Published contracts and API
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+          cache: true
+      - run: GOWORK=off go test ./internal/architecture
+
+  fresh-consumer:
+    name: Fresh consumer
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: Install exact head and compile outside checkout
         run: |
-          mapfile -d '' files < <(git ls-files -z -- '*.go' ':!:vendor/**')
-          if ((${#files[@]} == 0)); then
-            exit 0
-          fi
-          unformatted="$(gofmt -l "${files[@]}")"
-          if [[ -n "$unformatted" ]]; then
-            echo "$unformatted"
-            exit 1
-          fi
+          module="github.com/ronhuafeng/llmcaller-codex-go"
+          version="$(go list -m -f '{{.Version}}' "$module@${GITHUB_SHA}")"
+          test -n "$version"
+          cd "$(mktemp -d)"
+          go mod init example.test/fresh-consumer
+          go get "$module@$version"
+          printf 'package consumer\nimport _ "github.com/ronhuafeng/llmcaller-codex-go/llmcaller/codex"\n' > consumer.go
+          GOWORK=off go test ./...
 
-      - name: Vet
-        run: go vet ./...
-
-      - name: Test
-        run: go test ./...
+  fast-canary:
+    name: Fast canary
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+          cache: true
+      - run: GOWORK=off go test ./llmcaller/codex -run '^TestThreeLayerCanaryFast$' -count=1 -v
