@@ -6,6 +6,8 @@ This project follows Semantic Versioning.
 
 ## [Unreleased]
 
+## [0.2.1] - 2026-07-12
+
 - Defined the normative schema-equivalence and fail-closed contract, expanded
   the compatibility matrix with same-named public-boundary tests, and documented
   decoded-value and application-semantic limitations without promising byte
@@ -16,6 +18,8 @@ This project follows Semantic Versioning.
 - Enforced the named read-only ephemeral profile before every runner call by
   rejecting conflicting defaults, normalizing unset safety fields, and
   reapplying the requested policy while retaining effective-policy checks.
+- Updated the released SDK dependency to the corrected `codexsdk-go v0.2.1`
+  tag and added three-layer transport canaries for the release invariants.
 
 ## [0.2.0] - 2026-07-11
 
