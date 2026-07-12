@@ -372,10 +372,7 @@ func runThreeLayerFakeAppServer(scenario string) {
 					canarySend(map[string]any{"method": "model/rerouted", "params": map[string]any{"threadId": "thread-1", "turnId": "turn-1", "fromModel": fmt.Sprint(i), "toModel": fmt.Sprint(i + 1), "reason": "highRiskCyberActivity"}})
 				}
 			case "pending-live":
-				canarySend(map[string]any{"method": "model/rerouted", "params": map[string]any{"threadId": "thread-1", "turnId": "turn-1", "fromModel": "canary-start", "toModel": "canary-rerouted", "reason": "highRiskCyberActivity"}})
-				usage := map[string]any{"cachedInputTokens": 10, "inputTokens": 30, "outputTokens": 20, "reasoningOutputTokens": 5, "totalTokens": 50}
-				canarySend(map[string]any{"method": "thread/tokenUsage/updated", "params": map[string]any{"threadId": "thread-1", "turnId": "turn-1", "tokenUsage": map[string]any{"last": usage, "total": usage}}})
-				canarySend(map[string]any{"method": "turn/completed", "params": map[string]any{"threadId": "thread-1", "turn": map[string]any{"id": "turn-1", "items": []any{canaryAgentItem(`{"answer":true}`)}, "status": "completed"}}})
+				canaryCompleteAfterItem(`{"answer":true}`)
 			default:
 				canaryComplete(scenario)
 			}
@@ -405,6 +402,10 @@ func canaryComplete(scenario string) {
 		text = "not-json"
 	}
 	canaryItem("thread-1", "turn-1", text)
+	canaryCompleteAfterItem(text)
+}
+
+func canaryCompleteAfterItem(text string) {
 	canarySend(map[string]any{"method": "model/rerouted", "params": map[string]any{"threadId": "thread-1", "turnId": "turn-1", "fromModel": "canary-start", "toModel": "canary-rerouted", "reason": "highRiskCyberActivity"}})
 	usage := map[string]any{"cachedInputTokens": 10, "inputTokens": 30, "outputTokens": 20, "reasoningOutputTokens": 5, "totalTokens": 50}
 	canarySend(map[string]any{"method": "thread/tokenUsage/updated", "params": map[string]any{"threadId": "thread-1", "turnId": "turn-1", "tokenUsage": map[string]any{"last": usage, "total": usage}}})
