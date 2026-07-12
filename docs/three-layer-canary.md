@@ -6,10 +6,10 @@ app-server. It does not use a workspace, replacement, or local module source.
 
 Released module evidence:
 
-- `github.com/ronhuafeng/llmkit-go v0.2.0`
-  `h1:Mc7Flrhf3Q4oDMYLTZpXd1fuTLhd47NYh5LdgdnCl0Y=`
-- `github.com/ronhuafeng/codexsdk-go v0.2.1`
-  `h1:En46l12WoC535gzMWCLdj0YrrkfhZiNgT7eeYoo6Dy0=`
+- `github.com/ronhuafeng/llmkit-go v0.3.0-rc.1`
+  `h1:5ILhbW3xyyRHIhc+TyTZn6Xn1p0M2v7ZLiR6Km0zHvE=`
+- `github.com/ronhuafeng/codexsdk-go v0.3.0-rc.1`
+  `h1:3yiLoJfX94OdmBBgFI05FZ6c5dnI+ZUQqOoklqupy6Y=`
 
 `TestThreeLayerCanaryFast` is the normal CI subset. The full invariant suite is
 `LLMCALLER_FULL_CANARY=1 go test ./llmcaller/codex -run '^TestThreeLayerCanary'`
