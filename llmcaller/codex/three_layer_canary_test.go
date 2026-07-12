@@ -208,7 +208,12 @@ func TestThreeLayerCanaryFull(t *testing.T) {
 	})
 }
 
-func canaryCaller(t *testing.T, scenario string, options codexsdk.ClientOptions) (codexsdk.Client, *Caller) {
+type canaryClient interface {
+	ThreadRunner() codexsdk.ThreadRunner
+	Close() error
+}
+
+func canaryCaller(t *testing.T, scenario string, options codexsdk.ClientOptions) (canaryClient, *Caller) {
 	t.Helper()
 	options.CWD = t.TempDir()
 	options.Command = []string{os.Args[0], "-test.run=TestThreeLayerFakeAppServer", "--", scenario}
@@ -224,7 +229,7 @@ func canaryCaller(t *testing.T, scenario string, options codexsdk.ClientOptions)
 	return client, caller
 }
 
-func closeCanary(t *testing.T, client codexsdk.Client) {
+func closeCanary(t *testing.T, client canaryClient) {
 	t.Helper()
 	if err := client.Close(); err != nil {
 		t.Fatal(err)
