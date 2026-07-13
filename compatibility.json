@@ -1,0 +1,38 @@
+{
+  "format_version": 1,
+  "caller": {
+    "module": "github.com/ronhuafeng/llmcaller-codex-go",
+    "api_inventory": "internal/architecture/testdata/handwritten-api.txt"
+  },
+  "dependencies": [
+    {"module": "github.com/ronhuafeng/llmkit-go", "version": "v0.3.0"},
+    {"module": "github.com/ronhuafeng/codexsdk-go", "version": "v0.3.0"}
+  ],
+  "gates": {
+    "exported_api": {
+      "path": "internal/architecture/public_api_test.go",
+      "kind": "go_test",
+      "selector": "TestHandwrittenPublicAPI"
+    },
+    "schema_matrix": {
+      "path": "llmcaller/codex/caller_test.go",
+      "kind": "go_test",
+      "selector": "TestStrictOutputSchemaCompatibilityMatrix"
+    },
+    "clean_consumer": {
+      "path": ".github/workflows/ci.yml",
+      "kind": "github_job",
+      "selector": "fresh-consumer"
+    },
+    "fast_canary": {
+      "path": "llmcaller/codex/three_layer_canary_test.go",
+      "kind": "go_test",
+      "selector": "TestThreeLayerCanaryFast"
+    },
+    "full_canary": {
+      "path": "llmcaller/codex/three_layer_canary_test.go",
+      "kind": "go_test",
+      "selector": "TestThreeLayerCanaryFull"
+    }
+  }
+}

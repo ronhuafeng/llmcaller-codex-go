@@ -1,84 +1,15 @@
 package architecture
 
 import (
-	"bytes"
-	"encoding/json"
 	"go/build"
 	"go/parser"
 	"go/token"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strconv"
 	"strings"
 	"testing"
 )
-
-func TestMirroredUpstreamContracts(t *testing.T) {
-	root := repoRoot(t)
-	callerPlan, err := os.ReadFile(filepath.Join(root, "docs", "v0.2-refactor-plan.md"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	modules := []struct {
-		name string
-		dir  string
-	}{
-		{"llmkit-caller", moduleDir(t, "github.com/ronhuafeng/llmkit-go")},
-		{"codexsdk-caller", moduleDir(t, "github.com/ronhuafeng/codexsdk-go")},
-	}
-	for _, module := range modules {
-		upstreamPlan, err := os.ReadFile(filepath.Join(module.dir, "docs", "v0.2-refactor-plan.md"))
-		if err != nil {
-			t.Fatal(err)
-		}
-		got := contractBlock(t, callerPlan, module.name)
-		want := contractBlock(t, upstreamPlan, module.name)
-		if !bytes.Equal(got, want) {
-			t.Fatalf("contract %s differs from the resolved upstream module", module.name)
-		}
-	}
-}
-
-func moduleDir(t *testing.T, module string) string {
-	t.Helper()
-	command := exec.Command("go", "mod", "download", "-json", module)
-	command.Env = append(os.Environ(), "GOWORK=off")
-	output, err := command.Output()
-	if err != nil {
-		t.Fatalf("resolve %s: %v", module, err)
-	}
-	var downloaded struct {
-		Dir   string
-		Error string
-	}
-	if err := json.Unmarshal(output, &downloaded); err != nil {
-		t.Fatalf("decode resolved module %s: %v", module, err)
-	}
-	if downloaded.Error != "" {
-		t.Fatalf("resolve %s: %s", module, downloaded.Error)
-	}
-	if downloaded.Dir == "" {
-		t.Fatalf("resolve %s: module directory is empty", module)
-	}
-	return downloaded.Dir
-}
-
-func contractBlock(t *testing.T, document []byte, name string) []byte {
-	t.Helper()
-	startMarker := []byte("<!-- contract:" + name + ":start -->\n")
-	endMarker := []byte("\n<!-- contract:" + name + ":end -->")
-	start := bytes.Index(document, startMarker)
-	if start < 0 {
-		t.Fatalf("missing start marker for %s", name)
-	}
-	start += len(startMarker)
-	end := bytes.Index(document[start:], endMarker)
-	if end < 0 {
-		t.Fatalf("missing end marker for %s", name)
-	}
-	return document[start : start+end]
-}
 
 var allowedExternalImportPrefixes = []string{
 	"github.com/ronhuafeng/llmkit-go",
