@@ -30,7 +30,7 @@ rg -n "(/Users/|/home/[^/]+/|C:\\\\Users\\\\|BEGIN .*PRIVATE KEY|AKIA|OPENAI_API
 Use Semantic Versioning:
 
 ```sh
-version=v0.2.0 # replace with the new release version
+version=v0.3.0 # replace with the new release version
 git tag -a "$version" -m "$version"
 git push origin "$version"
 ```
