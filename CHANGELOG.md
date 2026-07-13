@@ -6,6 +6,9 @@ This project follows Semantic Versioning.
 
 ## [Unreleased]
 
+- Updated `llmkit-go` and `codexsdk-go` to their published `v0.3.0` stable
+  module tags without changing caller API or behavior.
+
 ## [0.3.0-rc.2] - 2026-07-13
 
 - Updated `codexsdk-go` to `v0.3.0-rc.2` so pending notifications are
