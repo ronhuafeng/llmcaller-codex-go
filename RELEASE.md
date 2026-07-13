@@ -14,8 +14,10 @@ Use this checklist for tagged releases.
 - Run the complete three-layer canary.
 - Confirm the proxy-tag consumer validator tests and workflow contract pass;
   the pushed tag itself supplies the real-tag evidence below. The gate must
-  prove the exact compatibility tuple declared by that tag: the caller tag and
-  the exact `llmkit-go` and `codexsdk-go` versions in `compatibility.json`.
+  first prove that the checkout and proxy-resolved caller artifact contain the
+  same `compatibility.json` bytes, then prove the exact compatibility tuple
+  declared by that tag: the caller tag and the exact `llmkit-go` and
+  `codexsdk-go` versions in the matched contract.
 - Run `gofmt -w llmcaller internal`.
 - Run `go vet ./...`.
 - Run `go test ./...`.
@@ -41,11 +43,14 @@ git push origin "$version"
 
 The tag push starts `.github/workflows/proxy-tag-consumer.yml`. It retries exact
 tag resolution from `proxy.golang.org` for at most ten minutes, then records the
-compatibility format and digest, declared and resolved module versions, sums,
-and deterministic typed call evidence under a separate ten-minute validation
-bound and five-minute per-command bound. Every resolved internal module must
-exactly match the declared compatibility tuple. A timeout or any
-contract/graph/consumer failure fails the release gate.
+compatibility format, both checkout and proxy-module contract digests, declared
+and resolved module versions, caller module zip and go.mod sums, available
+caller origin hash/tag ref, and deterministic typed call evidence under a
+separate ten-minute validation bound and five-minute per-command bound. The two
+contract digests must match before every resolved internal module is compared
+with the declared compatibility tuple. A timeout, missing or unreadable shipped
+contract, replacement module, digest mismatch, or any contract/graph/consumer
+failure fails the release gate.
 
 For `v0.x`, document breaking changes in the changelog. For `v1.0.0` and
 later, breaking exported API changes require a new major version.
@@ -53,8 +58,8 @@ later, breaking exported API changes require a new major version.
 ## After Tagging
 
 - Wait for the proxy-backed tag consumer workflow and retain its version, sum,
-  and typed-call artifact; it must contain no `replace`, `exclude`, `go.work`,
-  or pseudo-version upstream.
+  dual contract digest, caller origin, and typed-call artifact; it must contain
+  no `replace`, `exclude`, `go.work`, or pseudo-version upstream.
 - Create a GitHub release from the tag.
 - Include changelog highlights, compatibility notes, and any migration steps.
 - Verify the module is available through the Go module proxy.

@@ -174,6 +174,7 @@ func TestProxyTagConsumerWorkflowIsTagTriggeredAndBounded(t *testing.T) {
 	for _, required := range []string{
 		`go run ./internal/cmd/proxyconsumer`,
 		`-compatibility compatibility.json`,
+		`-module-compatibility compatibility.json`,
 		`-proxy https://proxy.golang.org`,
 		`-timeout 10m`,
 		`-retry-interval 15s`,

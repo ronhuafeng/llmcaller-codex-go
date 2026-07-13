@@ -12,7 +12,7 @@ import (
 	"time"
 )
 
-func TestLoadCompatibilityTupleRejectsMalformedOrIncompleteContracts(t *testing.T) {
+func TestDecodeCompatibilityTupleRejectsMalformedOrIncompleteContracts(t *testing.T) {
 	valid := `{
   "format_version": 1,
   "caller": {"module": "github.com/ronhuafeng/llmcaller-codex-go", "api_inventory": "inventory.txt"},
@@ -39,26 +39,18 @@ func TestLoadCompatibilityTupleRejectsMalformedOrIncompleteContracts(t *testing.
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			path := filepath.Join(t.TempDir(), "compatibility.json")
-			if err := os.WriteFile(path, []byte(tt.manifest), 0o600); err != nil {
-				t.Fatal(err)
-			}
-			_, err := loadCompatibilityTuple(path, "v0.4.0")
+			_, err := decodeCompatibilityTuple([]byte(tt.manifest), "v0.4.0")
 			if err == nil || !strings.Contains(err.Error(), tt.want) {
-				t.Fatalf("loadCompatibilityTuple error = %v, want %q", err, tt.want)
+				t.Fatalf("decodeCompatibilityTuple error = %v, want %q", err, tt.want)
 			}
 		})
 	}
 
-	path := filepath.Join(t.TempDir(), "compatibility.json")
-	if err := os.WriteFile(path, []byte(valid), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	tuple, err := loadCompatibilityTuple(path, "v0.4.0")
+	tuple, err := decodeCompatibilityTuple([]byte(valid), "v0.4.0")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if tuple.FormatVersion != 1 || len(tuple.Digest) != 64 {
+	if tuple.FormatVersion != 1 || len(tuple.CheckoutDigest) != 64 {
 		t.Fatalf("tuple metadata = %#v", tuple)
 	}
 	for module, want := range map[string]string{callerModule: "v0.4.0", llmkitModule: "v0.4.0", codexsdkModule: "v0.4.0"} {
@@ -95,6 +87,7 @@ func TestValidateResolvedModulesRequiresExactCompatibilityTuple(t *testing.T) {
 		{name: "codexsdk prerelease", index: 2, version: "v0.5.0-rc.1", want: "compatibility contract requires v0.4.0"},
 		{name: "missing sum", index: 2, clear: "sum", want: "module sum"},
 		{name: "missing go.mod sum", index: 1, clear: "gomodsum", want: "module sum"},
+		{name: "replacement module", index: 0, clear: "replace", want: "replacement module"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -107,6 +100,8 @@ func TestValidateResolvedModulesRequiresExactCompatibilityTuple(t *testing.T) {
 				bad[tt.index].Sum = ""
 			case "gomodsum":
 				bad[tt.index].GoModSum = ""
+			case "replace":
+				bad[tt.index].Replace = &moduleVersion{Path: "example.com/local"}
 			}
 			if err := validateResolvedModules(bad, expected); err == nil || !strings.Contains(err.Error(), tt.want) {
 				t.Fatalf("validateResolvedModules error = %v, want %q", err, tt.want)
@@ -128,17 +123,171 @@ func TestValidateResolvedModulesRequiresExactCompatibilityTuple(t *testing.T) {
 	}
 }
 
+func TestBindCompatibilityTupleRequiresProxyArtifactDigestMatch(t *testing.T) {
+	manifest := []byte(`{
+  "format_version": 1,
+  "caller": {"module": "github.com/ronhuafeng/llmcaller-codex-go", "api_inventory": "inventory.txt"},
+  "dependencies": [
+    {"module": "github.com/ronhuafeng/llmkit-go", "version": "v0.4.0"},
+    {"module": "github.com/ronhuafeng/codexsdk-go", "version": "v0.4.0"}
+  ],
+  "gates": {}
+}`)
+	checkoutDir := t.TempDir()
+	moduleDir := t.TempDir()
+	checkoutPath := filepath.Join(checkoutDir, "compatibility.json")
+	proxyPath := filepath.Join(moduleDir, "compatibility.json")
+	for _, path := range []string{checkoutPath, proxyPath} {
+		if err := os.WriteFile(path, manifest, 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	modules := []moduleVersion{{Path: callerModule, Version: "v0.4.0", Dir: moduleDir}}
+	tuple, err := bindCompatibilityTuple(checkoutPath, "compatibility.json", modules, "v0.4.0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if tuple.CheckoutDigest == "" || tuple.ProxyDigest != tuple.CheckoutDigest {
+		t.Fatalf("bound digests = checkout %q proxy %q", tuple.CheckoutDigest, tuple.ProxyDigest)
+	}
+
+	if err := os.WriteFile(proxyPath, append(manifest, '\n'), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	_, err = bindCompatibilityTuple(checkoutPath, "compatibility.json", modules, "v0.4.0")
+	if err == nil || !strings.Contains(err.Error(), "compatibility manifest digest mismatch") {
+		t.Fatalf("digest mismatch error = %v", err)
+	}
+}
+
+func TestBindCompatibilityTupleRejectsMissingUnreadableOrReplacedProxyArtifact(t *testing.T) {
+	manifest := []byte(`{
+  "format_version": 1,
+  "caller": {"module": "github.com/ronhuafeng/llmcaller-codex-go"},
+  "dependencies": [
+    {"module": "github.com/ronhuafeng/llmkit-go", "version": "v0.4.0"},
+    {"module": "github.com/ronhuafeng/codexsdk-go", "version": "v0.4.0"}
+  ],
+  "gates": {}
+}`)
+	checkoutPath := filepath.Join(t.TempDir(), "compatibility.json")
+	if err := os.WriteFile(checkoutPath, manifest, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	tests := []struct {
+		name    string
+		modules []moduleVersion
+		setup   func(string)
+		want    string
+	}{
+		{name: "missing caller", want: "missing " + callerModule},
+		{name: "missing module directory", modules: []moduleVersion{{Path: callerModule}}, want: "has no proxy-resolved module directory"},
+		{name: "missing manifest", modules: []moduleVersion{{Path: callerModule, Dir: t.TempDir()}}, want: "read proxy compatibility contract"},
+		{name: "unreadable artifact", modules: []moduleVersion{{Path: callerModule, Dir: t.TempDir()}}, setup: func(dir string) {
+			if err := os.Mkdir(filepath.Join(dir, "compatibility.json"), 0o700); err != nil {
+				t.Fatal(err)
+			}
+		}, want: "read proxy compatibility contract"},
+		{name: "replacement", modules: []moduleVersion{{Path: callerModule, Dir: t.TempDir(), Replace: &moduleVersion{Path: "example.com/local"}}}, want: "replacement module"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if tt.setup != nil {
+				tt.setup(tt.modules[0].Dir)
+			}
+			_, err := bindCompatibilityTuple(checkoutPath, "compatibility.json", tt.modules, "v0.4.0")
+			if err == nil || !strings.Contains(err.Error(), tt.want) {
+				t.Fatalf("bindCompatibilityTuple error = %v, want %q", err, tt.want)
+			}
+		})
+	}
+
+	_, err := bindCompatibilityTuple(filepath.Join(t.TempDir(), "missing.json"), "compatibility.json", []moduleVersion{{Path: callerModule, Dir: t.TempDir()}}, "v0.4.0")
+	if err == nil || !strings.Contains(err.Error(), "read checkout compatibility contract") {
+		t.Fatalf("missing checkout contract error = %v", err)
+	}
+}
+
+func TestModuleCompatibilityPathMustStayInsideResolvedArtifact(t *testing.T) {
+	for _, path := range []string{"", ".", "../compatibility.json", "/tmp/compatibility.json"} {
+		t.Run(path, func(t *testing.T) {
+			if _, err := moduleRelativePath("/proxy/module", path); err == nil || !strings.Contains(err.Error(), "module-relative file") {
+				t.Fatalf("moduleRelativePath(%q) error = %v", path, err)
+			}
+		})
+	}
+	got, err := moduleRelativePath("/proxy/module", "contracts/compatibility.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != filepath.Join("/proxy/module", "contracts", "compatibility.json") {
+		t.Fatalf("module path = %q", got)
+	}
+}
+
+func TestBindCompatibilityTupleChecksDigestBeforeContractFormat(t *testing.T) {
+	checkoutPath := filepath.Join(t.TempDir(), "compatibility.json")
+	moduleDir := t.TempDir()
+	if err := os.WriteFile(checkoutPath, []byte(`{"format_version":2}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(moduleDir, "compatibility.json"), []byte(`{"format_version":3}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	modules := []moduleVersion{{Path: callerModule, Dir: moduleDir}}
+	_, err := bindCompatibilityTuple(checkoutPath, "compatibility.json", modules, "v0.4.0")
+	if err == nil || !strings.Contains(err.Error(), "compatibility manifest digest mismatch") {
+		t.Fatalf("different unknown formats error = %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(moduleDir, "compatibility.json"), []byte(`{"format_version":2}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	_, err = bindCompatibilityTuple(checkoutPath, "compatibility.json", modules, "v0.4.0")
+	if err == nil || !strings.Contains(err.Error(), "format_version") {
+		t.Fatalf("matching unknown format error = %v", err)
+	}
+}
+
+func TestMergeCallerResolutionCarriesProxyOriginIntoGraphEvidence(t *testing.T) {
+	modules := []moduleVersion{
+		{Path: callerModule, Version: "v0.4.0", Dir: "/proxy/module", Sum: "h1:caller", GoModSum: "h1:caller-mod"},
+		{Path: llmkitModule, Version: "v0.4.0"},
+	}
+	resolution := moduleVersion{
+		Path: callerModule, Version: "v0.4.0",
+		Origin: &moduleOrigin{VCS: "git", Hash: "deadbeef", Ref: "refs/tags/v0.4.0"},
+	}
+	merged, err := mergeCallerResolution(modules, resolution)
+	if err != nil {
+		t.Fatal(err)
+	}
+	caller, err := resolvedModule(merged, callerModule)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if caller.Dir != "/proxy/module" || caller.Sum != "h1:caller" || caller.Origin == nil || caller.Origin.Hash != "deadbeef" {
+		t.Fatalf("merged caller evidence = %#v", caller)
+	}
+
+	bad := append([]moduleVersion(nil), modules...)
+	bad[0].Version = "v0.4.1"
+	if _, err := mergeCallerResolution(bad, resolution); err == nil || !strings.Contains(err.Error(), "does not match proxy query version") {
+		t.Fatalf("version mismatch error = %v", err)
+	}
+}
+
 func TestWriteEvidenceRecordsDeclaredAndResolvedTuple(t *testing.T) {
 	tuple := compatibilityTuple{
-		FormatVersion: 1,
-		Digest:        strings.Repeat("a", 64),
+		FormatVersion:  1,
+		CheckoutDigest: strings.Repeat("a", 64),
+		ProxyDigest:    strings.Repeat("a", 64),
 		Versions: map[string]string{
 			callerModule: "v0.4.0", llmkitModule: "v0.4.0", codexsdkModule: "v0.4.0",
 		},
 	}
 	modules := []moduleVersion{
 		{Path: codexsdkModule, Version: "v0.4.0", Sum: "h1:sdk", GoModSum: "h1:sdk-mod"},
-		{Path: callerModule, Version: "v0.4.0", Sum: "h1:caller", GoModSum: "h1:caller-mod"},
+		{Path: callerModule, Version: "v0.4.0", Sum: "h1:caller", GoModSum: "h1:caller-mod", Origin: &moduleOrigin{VCS: "git", URL: "https://github.com/ronhuafeng/llmcaller-codex-go", Hash: "deadbeef", Ref: "refs/tags/v0.4.0"}},
 		{Path: llmkitModule, Version: "v0.4.0", Sum: "h1:kit", GoModSum: "h1:kit-mod"},
 	}
 	var output bytes.Buffer
@@ -147,8 +296,10 @@ func TestWriteEvidenceRecordsDeclaredAndResolvedTuple(t *testing.T) {
 	}
 	text := output.String()
 	for _, want := range []string{
-		"compatibility_format=1", "compatibility_sha256=" + strings.Repeat("a", 64),
+		"compatibility_format=1", "checkout_compatibility_sha256=" + strings.Repeat("a", 64),
+		"proxy_compatibility_sha256=" + strings.Repeat("a", 64),
 		"declared_module=" + callerModule + " declared_version=v0.4.0 resolved_module=" + callerModule + " resolved_version=v0.4.0 sum=h1:caller gomodsum=h1:caller-mod",
+		"caller_origin_vcs=git caller_origin_url=https://github.com/ronhuafeng/llmcaller-codex-go caller_origin_hash=deadbeef caller_origin_ref=refs/tags/v0.4.0",
 		"declared_module=" + llmkitModule + " declared_version=v0.4.0 resolved_module=" + llmkitModule + " resolved_version=v0.4.0 sum=h1:kit gomodsum=h1:kit-mod",
 		"declared_module=" + codexsdkModule + " declared_version=v0.4.0 resolved_module=" + codexsdkModule + " resolved_version=v0.4.0 sum=h1:sdk gomodsum=h1:sdk-mod",
 		`call_evidence={"answer":true}`,

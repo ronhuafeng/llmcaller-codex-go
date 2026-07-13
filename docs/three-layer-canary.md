@@ -17,10 +17,12 @@ and runs only from the release/manual workflow.
 
 Every pushed `v*` caller tag also runs a smaller external-consumer canary from a
 new temporary module. It resolves the caller exclusively through
-`proxy.golang.org`, requires exact caller-tag resolution and the exact tagged
-`llmkit-go`/`codexsdk-go` versions declared by `compatibility.json` with sums,
-rejects module/workspace
-overrides, and executes a typed call using a deterministic fake at the SDK
-runner seam. The proxy propagation retry is bounded to ten minutes; subsequent
-validation has its own ten-minute total and five-minute per-command bounds. Its
-module graph and call evidence are retained as a workflow artifact.
+`proxy.golang.org`, reads `compatibility.json` from the resolved caller module,
+and requires its SHA-256 digest to match the tagged checkout before validating
+the exact caller/`llmkit-go`/`codexsdk-go` tuple with sums. It rejects missing or
+unreadable shipped contracts and module/workspace overrides, then executes a
+typed call using a deterministic fake at the SDK runner seam. The proxy
+propagation retry is bounded to ten minutes; subsequent validation has its own
+ten-minute total and five-minute per-command bounds. Both contract digests,
+caller origin, module graph, and call evidence are retained as a workflow
+artifact.
