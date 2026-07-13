@@ -87,10 +87,12 @@ post-execution check that Codex's effective result is read-only, never-approve,
 and ephemeral. `Stream.Wait` returns the complete exact terminal or partial
 result together with SDK and `ErrEffectiveProfile` causes; `Stream.Err` exposes
 the same joined terminal causes. Notification, usage, diagnostics, metadata,
-effective configuration, and partial evidence remain exact SDK values. Use
-`Stream.SDKStream` when a lower-level SDK operation is required, and observe the
-terminal result through the adapter wrapper when named-profile verification is
-required.
+effective configuration, and partial evidence remain exact SDK values. A
+decoded start remains profile-checked and observable even when its required
+thread ID is missing; failures before a start response is decoded do not
+synthesize a profile mismatch. Use `Stream.SDKStream` when a lower-level SDK
+operation is required, and observe the terminal result through the adapter
+wrapper when named-profile verification is required.
 
 ```go
 response, err := caller.Call(ctx, request)

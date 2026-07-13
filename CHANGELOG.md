@@ -6,6 +6,12 @@ This project follows Semantic Versioning.
 
 ## [Unreleased]
 
+- Fixed named-profile verification for decoded partial thread starts that lack
+  a required thread ID. Neutral, detailed, and streaming paths now retain the
+  exact start evidence and expose both the SDK identity cause and
+  `ErrEffectiveProfile` when applicable, without synthesizing a profile error
+  for failures before any response is decoded.
+
 ## [0.4.1] - 2026-07-13
 
 - Requires the published `llmkit-go v0.4.1` and `codexsdk-go v0.5.0` module
