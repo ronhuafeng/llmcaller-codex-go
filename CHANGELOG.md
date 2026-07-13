@@ -6,6 +6,9 @@ This project follows Semantic Versioning.
 
 ## [Unreleased]
 
+- Changed the handwritten API inventory to record only externally observable
+  exported struct fields and methods, so private representation changes do not
+  become compatibility obligations while public surface changes remain gated.
 - Added an adapter-owned exact `Stream` wrapper so `CallStream` applies the same
   effective read-only, never-approve, ephemeral postcondition as `CallDetailed`
   while preserving full SDK results, notifications, lifecycle operations, and
