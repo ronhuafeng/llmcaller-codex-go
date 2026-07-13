@@ -26,6 +26,7 @@ jobs:
         run: |
           go run ./internal/cmd/proxyconsumer \
             -tag "$CALLER_TAG" \
+            -compatibility compatibility.json \
             -proxy https://proxy.golang.org \
             -timeout 10m \
             -retry-interval 15s \

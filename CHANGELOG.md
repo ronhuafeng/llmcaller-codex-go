@@ -6,6 +6,11 @@ This project follows Semantic Versioning.
 
 ## [Unreleased]
 
+- Strengthened the proxy-backed tag consumer to read the tagged compatibility
+  contract, require the exact declared caller/llmkit/codexsdk version tuple, and
+  retain the contract digest, declared/resolved versions, sums, and typed call
+  evidence for release review.
+
 ## [0.4.0] - 2026-07-13
 
 - Requires the published `llmkit-go v0.4.0` and `codexsdk-go v0.4.0` module
