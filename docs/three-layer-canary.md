@@ -14,3 +14,12 @@ Released module evidence:
 `TestThreeLayerCanaryFast` is the normal CI subset. The full invariant suite is
 `LLMCALLER_FULL_CANARY=1 go test ./llmcaller/codex -run '^TestThreeLayerCanary'`
 and runs only from the release/manual workflow.
+
+Every pushed `v*` caller tag also runs a smaller external-consumer canary from a
+new temporary module. It resolves the caller exclusively through
+`proxy.golang.org`, requires exact caller-tag resolution and stable tagged
+`llmkit-go`/`codexsdk-go` versions with sums, rejects module/workspace
+overrides, and executes a typed call using a deterministic fake at the SDK
+runner seam. The proxy propagation retry is bounded to ten minutes; subsequent
+validation has its own ten-minute total and five-minute per-command bounds. Its
+module graph and call evidence are retained as a workflow artifact.

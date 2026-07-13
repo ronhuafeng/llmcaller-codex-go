@@ -1,0 +1,43 @@
+name: Proxy-backed tagged consumer
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: read
+
+jobs:
+  proxy-consumer:
+    name: Proxy-backed three-layer consumer
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - uses: actions/setup-go@v6
+        with:
+          go-version: stable
+          cache: false
+      - name: Resolve exact tag and run clean consumer
+        env:
+          CALLER_TAG: ${{ github.ref_name }}
+        run: |
+          go run ./internal/cmd/proxyconsumer \
+            -tag "$CALLER_TAG" \
+            -proxy https://proxy.golang.org \
+            -timeout 10m \
+            -retry-interval 15s \
+            -validation-timeout 10m \
+            -command-timeout 5m | tee proxy-consumer-evidence.txt
+          {
+            echo '```text'
+            cat proxy-consumer-evidence.txt
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v6
+        with:
+          name: proxy-consumer-evidence-${{ github.ref_name }}
+          path: proxy-consumer-evidence.txt
+          if-no-files-found: error
