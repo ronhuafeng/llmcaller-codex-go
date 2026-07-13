@@ -93,6 +93,81 @@ func TestThreeLayerCanaryFast(t *testing.T) {
 			t.Fatal(err)
 		}
 	})
+
+	t.Run("stream returns exact terminal evidence with effective profile error", func(t *testing.T) {
+		client, caller := canaryCaller(t, "effective-profile-mismatch", codexsdk.ClientOptions{})
+		defer closeCanary(t, client)
+		stream, err := caller.CallStream(context.Background(), validRequest())
+		if err != nil {
+			t.Fatal(err)
+		}
+		if stream.SDKStream() == nil {
+			t.Fatal("CallStream did not retain the typed SDK stream escape hatch")
+		}
+		run, err := stream.Wait(context.Background())
+		if !errors.Is(err, ErrEffectiveProfile) {
+			t.Fatalf("Wait error = %v, want ErrEffectiveProfile", err)
+		}
+		if run.Start.Thread.ID != "thread-1" || run.Start.Model != "canary-start" || run.Run.Turn.Status != protocolv2.TurnStatusCompleted || len(run.Run.Notifications) != 4 || run.Run.Usage == nil || run.Run.Usage.Total.OutputTokens != 20 {
+			t.Fatalf("profile mismatch erased exact result: %#v", run)
+		}
+		if run.Start.ApprovalPolicy.Kind() != protocolv2.AskForApprovalKindOnRequest || run.Start.Sandbox.Kind() != protocolv2.SandboxPolicyKindDangerFullAccess || run.Start.Thread.Ephemeral {
+			t.Fatalf("effective profile facts were not preserved: %#v", run.Start)
+		}
+	})
+}
+
+func TestEffectiveProfileContractAcrossPublicCallPaths(t *testing.T) {
+	profileCases := []struct {
+		name     string
+		scenario string
+		want     string
+	}{
+		{name: "valid", scenario: "success"},
+		{name: "approval", scenario: "effective-profile-approval", want: "not never"},
+		{name: "sandbox", scenario: "effective-profile-sandbox", want: "not read-only"},
+		{name: "ephemeral", scenario: "effective-profile-ephemeral", want: "not ephemeral"},
+	}
+	paths := []struct {
+		name string
+		call func(*Caller) (codexsdk.StartedThreadRun, error)
+	}{
+		{name: "Call", call: func(caller *Caller) (codexsdk.StartedThreadRun, error) {
+			response, err := caller.Call(context.Background(), validRequest())
+			details, _ := response.ProviderDetails.(Details)
+			return details.Run, err
+		}},
+		{name: "CallDetailed", call: func(caller *Caller) (codexsdk.StartedThreadRun, error) {
+			return caller.CallDetailed(context.Background(), validRequest())
+		}},
+		{name: "CallStream", call: func(caller *Caller) (codexsdk.StartedThreadRun, error) {
+			stream, err := caller.CallStream(context.Background(), validRequest())
+			if err != nil {
+				return codexsdk.StartedThreadRun{}, err
+			}
+			return stream.Wait(context.Background())
+		}},
+	}
+
+	for _, profileCase := range profileCases {
+		for _, path := range paths {
+			t.Run(profileCase.name+"/"+path.name, func(t *testing.T) {
+				client, caller := canaryCaller(t, profileCase.scenario, codexsdk.ClientOptions{})
+				defer closeCanary(t, client)
+				run, err := path.call(caller)
+				if profileCase.want == "" {
+					if err != nil {
+						t.Fatalf("call error = %v", err)
+					}
+				} else if !errors.Is(err, ErrEffectiveProfile) || !strings.Contains(err.Error(), profileCase.want) {
+					t.Fatalf("call error = %v, want ErrEffectiveProfile containing %q", err, profileCase.want)
+				}
+				if run.Start.Thread.ID != "thread-1" || run.Run.Turn.Status != protocolv2.TurnStatusCompleted || len(run.Run.Notifications) != 4 {
+					t.Fatalf("exact run = %#v", run)
+				}
+			})
+		}
+	}
 }
 
 func TestThreeLayerCanaryFull(t *testing.T) {
@@ -351,7 +426,20 @@ func runThreeLayerFakeAppServer(scenario string) {
 			if params["ephemeral"] != true || params["sandbox"] != "read-only" {
 				os.Exit(2)
 			}
-			canarySend(map[string]any{"id": id, "result": canaryThreadStart()})
+			result := canaryThreadStart()
+			switch scenario {
+			case "effective-profile-mismatch":
+				result["approvalPolicy"] = "on-request"
+				result["sandbox"] = map[string]any{"type": "dangerFullAccess"}
+				result["thread"].(map[string]any)["ephemeral"] = false
+			case "effective-profile-approval":
+				result["approvalPolicy"] = "on-request"
+			case "effective-profile-sandbox":
+				result["sandbox"] = map[string]any{"type": "dangerFullAccess"}
+			case "effective-profile-ephemeral":
+				result["thread"].(map[string]any)["ephemeral"] = false
+			}
+			canarySend(map[string]any{"id": id, "result": result})
 		case "turn/start":
 			params, _ := message["params"].(map[string]any)
 			if params["approvalPolicy"] != "never" {

@@ -68,7 +68,8 @@ roots, and all other non-profile generated defaults remain caller-controlled.
   effective model, and total token usage.
 - `CallDetailed` returns the exact `codexsdk.StartedThreadRun` and is the core
   execution path.
-- `CallStream` returns the exact SDK stream and uses the same request builder.
+- `CallStream` returns an adapter-owned exact stream wrapper and uses the same
+  request builder. `Stream.SDKStream` is the adjacent typed SDK escape hatch.
 
 `Call` places an immutable exact run in `codexcaller.Details`. Notifications,
 diagnostics, IDs, exact usage, sandbox, approval, service tier, and generated
@@ -78,12 +79,15 @@ error cause chain.
 
 Requested-policy enforcement happens before transport for `Call`,
 `CallDetailed`, and `CallStream`: no explicitly conflicting named-profile
-defaults can reach the SDK runner. Separately, after a successful non-streaming
-start, the detailed path verifies that Codex's effective result is read-only,
-never-approve, and ephemeral. That post-execution check is retained because an
-upstream effective policy can differ from the safe request. `CallStream` still
-returns the exact stream without consuming it, so its caller must inspect the
-eventual exact result when effective-policy verification is required.
+defaults can reach the SDK runner. All three paths also apply the same
+post-execution check that Codex's effective result is read-only, never-approve,
+and ephemeral. `Stream.Wait` returns the complete exact terminal or partial
+result together with SDK and `ErrEffectiveProfile` causes; `Stream.Err` exposes
+the same joined terminal causes. Notification, usage, diagnostics, metadata,
+effective configuration, and partial evidence remain exact SDK values. Use
+`Stream.SDKStream` when a lower-level SDK operation is required, and observe the
+terminal result through the adapter wrapper when named-profile verification is
+required.
 
 ```go
 response, err := caller.Call(ctx, request)

@@ -21,6 +21,9 @@ var (
 	ErrNilThreadRunner = errors.New("llmcaller/codex: thread runner is nil")
 	// ErrMissingSchemaJSON reports a request without an output schema.
 	ErrMissingSchemaJSON = errors.New("llmcaller/codex: output schema JSON is required")
+	// ErrEffectiveProfile reports that Codex's effective result does not satisfy
+	// the named adapter safety profile.
+	ErrEffectiveProfile = errors.New("llmcaller/codex: effective profile mismatch")
 )
 
 // ThreadRunner is the exact subset of codexsdk.ThreadRunner used by Caller.
@@ -40,6 +43,105 @@ type Options struct {
 // Details retains the exact Codex run behind a neutral response.
 type Details struct {
 	Run codexsdk.StartedThreadRun
+}
+
+type startedRunStream interface {
+	Next(context.Context) bool
+	Notification() protocolv2.ServerNotification
+	Wait(context.Context) (codexsdk.StartedThreadRun, error)
+	Result() (codexsdk.StartedThreadRun, bool)
+	Err() error
+	Close() error
+}
+
+// Stream preserves exact SDK stream observation while applying adapter-owned
+// effective-profile validation to terminal result observation.
+type Stream struct {
+	stream   startedRunStream
+	sdk      *codexsdk.Stream[codexsdk.StartedThreadRun]
+	finalize func(codexsdk.StartedThreadRun, error) (codexsdk.StartedThreadRun, error)
+}
+
+// SDKStream returns the underlying exact SDK stream as a typed escape hatch.
+// Observe terminal results through Wait or Err when named-profile validation is
+// required.
+func (s *Stream) SDKStream() *codexsdk.Stream[codexsdk.StartedThreadRun] {
+	if s == nil {
+		return nil
+	}
+	return s.sdk
+}
+
+// Next advances over the exact SDK notification history.
+func (s *Stream) Next(ctx context.Context) bool {
+	return s != nil && s.stream != nil && s.stream.Next(ctx)
+}
+
+// Notification returns the current exact SDK notification.
+func (s *Stream) Notification() protocolv2.ServerNotification {
+	if s == nil || s.stream == nil {
+		return protocolv2.ServerNotification{}
+	}
+	return s.stream.Notification()
+}
+
+// Wait returns the exact terminal or partial result together with SDK and
+// effective-profile errors.
+func (s *Stream) Wait(ctx context.Context) (codexsdk.StartedThreadRun, error) {
+	if s == nil || s.stream == nil {
+		return codexsdk.StartedThreadRun{}, codexsdk.ErrStreamClosed
+	}
+	run, err := s.stream.Wait(ctx)
+	return s.finalizeRun(run, err)
+}
+
+// Result returns the latest exact SDK result snapshot without consuming it.
+func (s *Stream) Result() (codexsdk.StartedThreadRun, bool) {
+	if s == nil || s.stream == nil {
+		return codexsdk.StartedThreadRun{}, false
+	}
+	return s.stream.Result()
+}
+
+// Err returns the SDK terminal cause joined with any effective-profile error.
+func (s *Stream) Err() error {
+	if s == nil || s.stream == nil {
+		return codexsdk.ErrStreamClosed
+	}
+	run, ok := s.stream.Result()
+	if !ok {
+		return s.stream.Err()
+	}
+	streamErr := s.stream.Err()
+	if streamErr == nil && !isTerminalRun(run) {
+		return nil
+	}
+	_, err := s.finalizeRun(run, streamErr)
+	return err
+}
+
+func isTerminalRun(run codexsdk.StartedThreadRun) bool {
+	switch run.Run.Turn.Status {
+	case protocolv2.TurnStatusCompleted, protocolv2.TurnStatusFailed, protocolv2.TurnStatusInterrupted:
+		return true
+	default:
+		return false
+	}
+}
+
+// Close cancels the shared exact SDK run.
+func (s *Stream) Close() error {
+	if s == nil || s.stream == nil {
+		return nil
+	}
+	return s.stream.Close()
+}
+
+func (s *Stream) finalizeRun(run codexsdk.StartedThreadRun, err error) (codexsdk.StartedThreadRun, error) {
+	if s.finalize == nil {
+		return run, err
+	}
+	return s.finalize(run, err)
 }
 
 // ProviderName returns the stable provider identity used by neutral evidence.
@@ -128,6 +230,10 @@ func (c *Caller) CallDetailed(ctx context.Context, request llmadapter.Request) (
 		return codexsdk.StartedThreadRun{}, err
 	}
 	run, runErr := c.runner.Start(ctx, startRequest)
+	return c.finalizeRun(run, runErr)
+}
+
+func (c *Caller) finalizeRun(run codexsdk.StartedThreadRun, runErr error) (codexsdk.StartedThreadRun, error) {
 	cloned, cloneErr := cloneStartedRun(run)
 	if cloneErr != nil {
 		cloned = run
@@ -137,7 +243,7 @@ func (c *Caller) CallDetailed(ctx context.Context, request llmadapter.Request) (
 }
 
 // CallStream starts the same exact request through the SDK streaming path.
-func (c *Caller) CallStream(ctx context.Context, request llmadapter.Request) (*codexsdk.Stream[codexsdk.StartedThreadRun], error) {
+func (c *Caller) CallStream(ctx context.Context, request llmadapter.Request) (*Stream, error) {
 	if c == nil || isNil(c.runner) {
 		return nil, ErrNilThreadRunner
 	}
@@ -145,7 +251,15 @@ func (c *Caller) CallStream(ctx context.Context, request llmadapter.Request) (*c
 	if err != nil {
 		return nil, err
 	}
-	return c.runner.StartStream(ctx, startRequest)
+	stream, streamErr := c.runner.StartStream(ctx, startRequest)
+	if stream == nil {
+		return nil, streamErr
+	}
+	return c.wrapStream(stream, stream), streamErr
+}
+
+func (c *Caller) wrapStream(stream startedRunStream, sdk *codexsdk.Stream[codexsdk.StartedThreadRun]) *Stream {
+	return &Stream{stream: stream, sdk: sdk, finalize: c.finalizeRun}
 }
 
 func (c *Caller) request(request llmadapter.Request) (codexsdk.StartThreadRunRequest, error) {
@@ -200,13 +314,13 @@ func (c *Caller) validateProfile(run codexsdk.StartedThreadRun) error {
 		return nil
 	}
 	if run.Start.ApprovalPolicy.Kind() != protocolv2.AskForApprovalKindNever {
-		return errors.New("llmcaller/codex: read-only profile effective approval policy is not never")
+		return fmt.Errorf("%w: read-only profile effective approval policy is not never", ErrEffectiveProfile)
 	}
 	if run.Start.Sandbox.Kind() != protocolv2.SandboxPolicyKindReadOnly {
-		return errors.New("llmcaller/codex: read-only profile effective sandbox is not read-only")
+		return fmt.Errorf("%w: read-only profile effective sandbox is not read-only", ErrEffectiveProfile)
 	}
 	if !run.Start.Thread.Ephemeral {
-		return errors.New("llmcaller/codex: read-only profile effective thread is not ephemeral")
+		return fmt.Errorf("%w: read-only profile effective thread is not ephemeral", ErrEffectiveProfile)
 	}
 	return nil
 }

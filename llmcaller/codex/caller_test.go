@@ -23,6 +23,43 @@ type fakeRunner struct {
 	streamErr      error
 }
 
+type fakeStartedRunStream struct {
+	result        codexsdk.StartedThreadRun
+	err           error
+	notifications []protocolv2.ServerNotification
+	index         int
+	current       protocolv2.ServerNotification
+	closed        bool
+}
+
+func (stream *fakeStartedRunStream) Next(context.Context) bool {
+	if stream.index >= len(stream.notifications) {
+		return false
+	}
+	stream.current = stream.notifications[stream.index]
+	stream.index++
+	return true
+}
+
+func (stream *fakeStartedRunStream) Notification() protocolv2.ServerNotification {
+	return stream.current
+}
+
+func (stream *fakeStartedRunStream) Wait(context.Context) (codexsdk.StartedThreadRun, error) {
+	return stream.result, stream.err
+}
+
+func (stream *fakeStartedRunStream) Result() (codexsdk.StartedThreadRun, bool) {
+	return stream.result, true
+}
+
+func (stream *fakeStartedRunStream) Err() error { return stream.err }
+
+func (stream *fakeStartedRunStream) Close() error {
+	stream.closed = true
+	return nil
+}
+
 func (runner *fakeRunner) Start(ctx context.Context, request codexsdk.StartThreadRunRequest) (codexsdk.StartedThreadRun, error) {
 	if err := ctx.Err(); err != nil {
 		return codexsdk.StartedThreadRun{}, err
@@ -42,6 +79,12 @@ var _ llmadapter.Caller = (*Caller)(nil)
 type nullAwareString struct {
 	SawNull bool
 }
+
+type typedProviderError struct {
+	code string
+}
+
+func (err *typedProviderError) Error() string { return "provider terminal cause: " + err.code }
 
 func (value *nullAwareString) UnmarshalJSON(data []byte) error {
 	value.SawNull = string(data) == "null"
@@ -266,24 +309,118 @@ func TestReadOnlyEphemeralProfileSetsAndVerifiesExactPolicy(t *testing.T) {
 		t.Fatalf("turn approval = %#v", request.Turn.ApprovalPolicy)
 	}
 
-	runner.result.Start.Sandbox = protocolv2.NewSandboxPolicyDangerFullAccess()
-	partial, err := caller.CallDetailed(context.Background(), validRequest())
-	if err == nil || partial.Start.Thread.ID == "" {
-		t.Fatalf("effective policy mismatch result=%#v err=%v", partial, err)
+}
+
+func TestEffectiveProfileContractIsSharedByCallAndDetailed(t *testing.T) {
+	type profileCase struct {
+		name   string
+		mutate func(*codexsdk.StartedThreadRun)
+		want   string
+	}
+	cases := []profileCase{
+		{name: "valid"},
+		{name: "approval", mutate: func(run *codexsdk.StartedThreadRun) {
+			run.Start.ApprovalPolicy = protocolv2.NewAskForApprovalOnRequest()
+		}, want: "not never"},
+		{name: "sandbox", mutate: func(run *codexsdk.StartedThreadRun) {
+			run.Start.Sandbox = protocolv2.NewSandboxPolicyDangerFullAccess()
+		}, want: "not read-only"},
+		{name: "ephemeral", mutate: func(run *codexsdk.StartedThreadRun) {
+			run.Start.Thread.Ephemeral = false
+		}, want: "not ephemeral"},
+	}
+	paths := []struct {
+		name string
+		call func(*Caller, *fakeRunner) (codexsdk.StartedThreadRun, error)
+	}{
+		{name: "Call", call: func(caller *Caller, _ *fakeRunner) (codexsdk.StartedThreadRun, error) {
+			response, err := caller.Call(context.Background(), validRequest())
+			if details, ok := response.ProviderDetails.(Details); ok {
+				return details.Run, err
+			}
+			return codexsdk.StartedThreadRun{}, err
+		}},
+		{name: "CallDetailed", call: func(caller *Caller, _ *fakeRunner) (codexsdk.StartedThreadRun, error) {
+			return caller.CallDetailed(context.Background(), validRequest())
+		}},
 	}
 
-	runner.result = validStartedRun("ok", "gpt")
-	runner.result.Start.ApprovalPolicy = protocolv2.NewAskForApprovalOnRequest()
-	partial, err = caller.CallDetailed(context.Background(), validRequest())
-	if err == nil || partial.Start.Thread.ID == "" || !strings.Contains(err.Error(), "not never") {
-		t.Fatalf("effective approval mismatch result=%#v err=%v", partial, err)
+	for _, testCase := range cases {
+		for _, path := range paths {
+			t.Run(testCase.name+"/"+path.name, func(t *testing.T) {
+				run := validStartedRun("ok", "gpt")
+				if testCase.mutate != nil {
+					testCase.mutate(&run)
+				}
+				runner := &fakeRunner{result: run}
+				caller, err := New(ReadOnlyEphemeralOptions(runner))
+				if err != nil {
+					t.Fatal(err)
+				}
+				got, err := path.call(caller, runner)
+				if testCase.want == "" {
+					if err != nil {
+						t.Fatalf("call error = %v", err)
+					}
+				} else if !errors.Is(err, ErrEffectiveProfile) || !strings.Contains(err.Error(), testCase.want) {
+					t.Fatalf("call error = %v, want ErrEffectiveProfile containing %q", err, testCase.want)
+				}
+				if !reflect.DeepEqual(got, run) {
+					t.Fatalf("exact result = %#v, want %#v", got, run)
+				}
+			})
+		}
+	}
+}
+
+func TestStreamJoinsProviderAndProfileErrorsWithoutLosingExactEvidence(t *testing.T) {
+	providerErr := &typedProviderError{code: "quota"}
+	run := validStartedRun("partial", "gpt")
+	run.Start.ApprovalPolicy = protocolv2.NewAskForApprovalOnRequest()
+	run.Start.Sandbox = protocolv2.NewSandboxPolicyDangerFullAccess()
+	run.Start.Thread.Ephemeral = false
+	run.Run.Diagnostics = []codexsdk.DiagnosticRef{{Kind: "provider", Path: "turn/completed"}}
+	run.Run.Notifications = []protocolv2.ServerNotification{modelRerouted("gpt", "gpt-rerouted")}
+	run.Run.Usage = &protocolv2.ThreadTokenUsage{Total: protocolv2.TokenUsageBreakdown{InputTokens: 3, OutputTokens: 5}}
+
+	runner := &fakeRunner{result: run, err: providerErr}
+	caller, err := New(ReadOnlyEphemeralOptions(runner))
+	if err != nil {
+		t.Fatal(err)
+	}
+	inner := &fakeStartedRunStream{result: run, err: providerErr, notifications: run.Run.Notifications}
+	stream := caller.wrapStream(inner, nil)
+	got, err := stream.Wait(context.Background())
+	if !errors.Is(err, providerErr) || !errors.Is(err, ErrEffectiveProfile) {
+		t.Fatalf("Wait error = %v, want provider and profile causes", err)
+	}
+	var typedWaitErr *typedProviderError
+	if !errors.As(err, &typedWaitErr) || typedWaitErr.code != "quota" {
+		t.Fatalf("Wait error = %v, want typed provider cause", err)
+	}
+	if !reflect.DeepEqual(got, run) {
+		t.Fatalf("Wait result = %#v, want complete exact evidence %#v", got, run)
+	}
+	streamErr := stream.Err()
+	if !errors.Is(streamErr, providerErr) || !errors.Is(streamErr, ErrEffectiveProfile) {
+		t.Fatalf("Err = %v, want provider and profile causes", streamErr)
+	}
+	var typedStreamErr *typedProviderError
+	if !errors.As(streamErr, &typedStreamErr) || typedStreamErr.code != "quota" {
+		t.Fatalf("Err = %v, want typed provider cause", streamErr)
+	}
+	if !stream.Next(context.Background()) || !reflect.DeepEqual(stream.Notification(), run.Run.Notifications[0]) {
+		t.Fatalf("notification delegation lost exact fact: %#v", stream.Notification())
+	}
+	if err := stream.Close(); err != nil || !inner.closed {
+		t.Fatalf("Close = %v, closed=%v", err, inner.closed)
 	}
 
-	runner.result = validStartedRun("ok", "gpt")
-	runner.result.Start.Thread.Ephemeral = false
-	partial, err = caller.CallDetailed(context.Background(), validRequest())
-	if err == nil || partial.Start.Thread.ID == "" || !strings.Contains(err.Error(), "not ephemeral") {
-		t.Fatalf("effective ephemeral mismatch result=%#v err=%v", partial, err)
+	activeRun := run
+	activeRun.Run.Turn.Status = protocolv2.TurnStatusInProgress
+	active := caller.wrapStream(&fakeStartedRunStream{result: activeRun}, nil)
+	if err := active.Err(); err != nil {
+		t.Fatalf("active stream Err = %v, want nil until terminal", err)
 	}
 }
 
