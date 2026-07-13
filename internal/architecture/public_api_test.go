@@ -39,8 +39,12 @@ func TestHandwrittenPublicAPI(t *testing.T) {
 		t.Fatal(err)
 	}
 	if actual != string(want) {
-		t.Fatalf("handwritten public API changed; update the normative plan first, then review the canonical allowlist:\n%s", actual)
+		t.Fatal(publicAPIMismatchMessage(actual))
 	}
+}
+
+func publicAPIMismatchMessage(actual string) string {
+	return "handwritten public API changed; review the exported surface against the canonical allowlist and active compatibility contract compatibility.json; review changelog and migration obligations, then verify public behavior tests and the clean consumer before accepting the inventory change:\n" + actual
 }
 
 type callerSourceImporter struct {
