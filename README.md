@@ -12,7 +12,7 @@ protocol, streaming, and thread lifecycle belong to `codexsdk-go`.
 ## Install
 
 ```sh
-go get github.com/ronhuafeng/llmcaller-codex-go@v0.3.0
+go get github.com/ronhuafeng/llmcaller-codex-go@v0.4.0
 ```
 
 Go 1.23 or newer is required.
@@ -70,6 +70,9 @@ roots, and all other non-profile generated defaults remain caller-controlled.
   execution path.
 - `CallStream` returns an adapter-owned exact stream wrapper and uses the same
   request builder. `Stream.SDKStream` is the adjacent typed SDK escape hatch.
+
+See the [v0.4 migration guide](docs/v0.4-migration.md) when updating code that
+stored the pre-v0.4 SDK stream return type explicitly.
 
 `Call` places an immutable exact run in `codexcaller.Details`. Notifications,
 diagnostics, IDs, exact usage, sandbox, approval, service tier, and generated

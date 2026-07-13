@@ -6,6 +6,12 @@ This project follows Semantic Versioning.
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-07-13
+
+- Requires the published `llmkit-go v0.4.0` and `codexsdk-go v0.4.0` module
+  tags. The caller module graph contains no replacements, excludes, workspace
+  overrides, or pseudo-versions.
+
 - Added a `v*` tag-triggered, bounded-retry proxy consumer gate that resolves
   the exact caller tag from `proxy.golang.org`, rejects non-stable upstream
   versions and module overrides, records module sums, and runs a deterministic
@@ -16,11 +22,14 @@ This project follows Semantic Versioning.
 - Changed the handwritten API inventory to record only externally observable
   exported struct fields and methods, so private representation changes do not
   become compatibility obligations while public surface changes remain gated.
-- Added an adapter-owned exact `Stream` wrapper so `CallStream` applies the same
-  effective read-only, never-approve, ephemeral postcondition as `CallDetailed`
-  while preserving full SDK results, notifications, lifecycle operations, and
-  a typed `SDKStream` escape hatch. SDK and `ErrEffectiveProfile` causes remain
-  distinguishable through `errors.Is`.
+- **Breaking (pre-v1):** `CallStream` now returns an adapter-owned exact
+  `*codexcaller.Stream` wrapper instead of
+  `*codexsdk.Stream[codexsdk.StartedThreadRun]`. The wrapper applies the same
+  effective read-only, never-approve, ephemeral postcondition as
+  `CallDetailed` while preserving full SDK results, notifications, lifecycle
+  operations, and a typed `SDKStream` escape hatch. SDK and
+  `ErrEffectiveProfile` causes remain distinguishable through `errors.Is`.
+  See the [v0.4 migration guide](docs/v0.4-migration.md).
 
 ## [0.3.0] - 2026-07-13
 
