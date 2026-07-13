@@ -87,6 +87,22 @@ type typedProviderError struct {
 
 func (err *typedProviderError) Error() string { return "provider terminal cause: " + err.code }
 
+func newReadOnlyEphemeralCaller(t *testing.T, runner ThreadRunner) *Caller {
+	t.Helper()
+	caller, err := New(ReadOnlyEphemeralOptions(runner))
+	if err != nil {
+		t.Fatal(err)
+	}
+	return caller
+}
+
+func requireMissingThreadProfileError(t *testing.T, err error, want string) {
+	t.Helper()
+	if !errors.Is(err, codexsdk.ErrMissingThreadID) || !errors.Is(err, ErrEffectiveProfile) || !strings.Contains(err.Error(), want) {
+		t.Fatalf("error = %v, want missing-thread and profile causes containing %q", err, want)
+	}
+}
+
 func (value *nullAwareString) UnmarshalJSON(data []byte) error {
 	value.SawNull = string(data) == "null"
 	return nil
@@ -380,18 +396,10 @@ func TestCallDetailedValidatesDecodedMissingThreadIDApproval(t *testing.T) {
 	partial.Run = codexsdk.ThreadRunResult{}
 	partial.Start.ApprovalPolicy = protocolv2.NewAskForApprovalOnRequest()
 	runner := &fakeRunner{result: partial, err: codexsdk.ErrMissingThreadID}
-	caller, err := New(ReadOnlyEphemeralOptions(runner))
-	if err != nil {
-		t.Fatal(err)
-	}
+	caller := newReadOnlyEphemeralCaller(t, runner)
 
 	got, err := caller.CallDetailed(context.Background(), validRequest())
-	if !errors.Is(err, codexsdk.ErrMissingThreadID) || !errors.Is(err, ErrEffectiveProfile) {
-		t.Fatalf("CallDetailed error = %v, want missing-thread and profile causes", err)
-	}
-	if !strings.Contains(err.Error(), "not never") {
-		t.Fatalf("CallDetailed error = %v, want approval mismatch", err)
-	}
+	requireMissingThreadProfileError(t, err, "not never")
 	if !reflect.DeepEqual(got, partial) {
 		t.Fatalf("CallDetailed result = %#v, want exact partial evidence %#v", got, partial)
 	}
@@ -405,18 +413,10 @@ func TestCallValidatesDecodedMissingThreadIDSandboxAndProjectsEvidence(t *testin
 	roots := []string{"/decoded-root"}
 	partial.Start.RuntimeWorkspaceRoots = &roots
 	runner := &fakeRunner{result: partial, err: codexsdk.ErrMissingThreadID}
-	caller, err := New(ReadOnlyEphemeralOptions(runner))
-	if err != nil {
-		t.Fatal(err)
-	}
+	caller := newReadOnlyEphemeralCaller(t, runner)
 
 	response, err := caller.Call(context.Background(), validRequest())
-	if !errors.Is(err, codexsdk.ErrMissingThreadID) || !errors.Is(err, ErrEffectiveProfile) {
-		t.Fatalf("Call error = %v, want missing-thread and profile causes", err)
-	}
-	if !strings.Contains(err.Error(), "not read-only") {
-		t.Fatalf("Call error = %v, want sandbox mismatch", err)
-	}
+	requireMissingThreadProfileError(t, err, "not read-only")
 	if response.Execution.ProviderName != "codex" || response.Execution.EffectiveModel != "decoded-model" {
 		t.Fatalf("Call evidence = %#v, want decoded start projection", response.Execution)
 	}
@@ -438,26 +438,16 @@ func TestStreamValidatesDecodedMissingThreadIDEphemeralOnWaitAndErr(t *testing.T
 	partial.Run = codexsdk.ThreadRunResult{}
 	missingIDErr := fmt.Errorf("malformed decoded start: %w", codexsdk.ErrMissingThreadID)
 	runner := &fakeRunner{}
-	caller, err := New(ReadOnlyEphemeralOptions(runner))
-	if err != nil {
-		t.Fatal(err)
-	}
+	caller := newReadOnlyEphemeralCaller(t, runner)
 	stream := caller.wrapStream(&fakeStartedRunStream{result: partial, err: missingIDErr}, nil)
 
 	got, waitErr := stream.Wait(context.Background())
-	if !errors.Is(waitErr, codexsdk.ErrMissingThreadID) || !errors.Is(waitErr, ErrEffectiveProfile) {
-		t.Fatalf("Wait error = %v, want missing-thread and profile causes", waitErr)
-	}
-	if !strings.Contains(waitErr.Error(), "not ephemeral") {
-		t.Fatalf("Wait error = %v, want ephemeral mismatch", waitErr)
-	}
+	requireMissingThreadProfileError(t, waitErr, "not ephemeral")
 	if !reflect.DeepEqual(got, partial) {
 		t.Fatalf("Wait result = %#v, want exact partial evidence %#v", got, partial)
 	}
 	streamErr := stream.Err()
-	if !errors.Is(streamErr, codexsdk.ErrMissingThreadID) || !errors.Is(streamErr, ErrEffectiveProfile) {
-		t.Fatalf("Err = %v, want missing-thread and profile causes", streamErr)
-	}
+	requireMissingThreadProfileError(t, streamErr, "not ephemeral")
 	if streamErr.Error() != waitErr.Error() {
 		t.Fatalf("Err = %q, Wait error = %q, want stable terminal causes", streamErr, waitErr)
 	}
@@ -465,15 +455,10 @@ func TestStreamValidatesDecodedMissingThreadIDEphemeralOnWaitAndErr(t *testing.T
 
 func TestCallProjectsZeroValuedDecodedMissingThreadIDEvidence(t *testing.T) {
 	runner := &fakeRunner{err: codexsdk.ErrMissingThreadID}
-	caller, err := New(ReadOnlyEphemeralOptions(runner))
-	if err != nil {
-		t.Fatal(err)
-	}
+	caller := newReadOnlyEphemeralCaller(t, runner)
 
 	response, err := caller.Call(context.Background(), validRequest())
-	if !errors.Is(err, codexsdk.ErrMissingThreadID) || !errors.Is(err, ErrEffectiveProfile) {
-		t.Fatalf("Call error = %v, want missing-thread and profile causes", err)
-	}
+	requireMissingThreadProfileError(t, err, "not never")
 	if response.Execution.ProviderName != "codex" {
 		t.Fatalf("Call evidence = %#v, want decoded start provider projection", response.Execution)
 	}
@@ -486,10 +471,7 @@ func TestCallProjectsZeroValuedDecodedMissingThreadIDEvidence(t *testing.T) {
 func TestCallDoesNotSynthesizeProfileMismatchBeforeStartResponse(t *testing.T) {
 	transportErr := errors.New("thread/start transport failed")
 	runner := &fakeRunner{err: transportErr}
-	caller, err := New(ReadOnlyEphemeralOptions(runner))
-	if err != nil {
-		t.Fatal(err)
-	}
+	caller := newReadOnlyEphemeralCaller(t, runner)
 
 	response, err := caller.Call(context.Background(), validRequest())
 	if !errors.Is(err, transportErr) || errors.Is(err, ErrEffectiveProfile) {

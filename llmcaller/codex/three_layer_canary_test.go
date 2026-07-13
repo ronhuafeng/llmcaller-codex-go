@@ -118,76 +118,30 @@ func TestThreeLayerCanaryFast(t *testing.T) {
 }
 
 func TestEffectiveProfileContractAcrossPublicCallPaths(t *testing.T) {
-	profileCases := []struct {
-		name     string
-		scenario string
-		want     string
-	}{
-		{name: "valid", scenario: "success"},
-		{name: "approval", scenario: "effective-profile-approval", want: "not never"},
-		{name: "sandbox", scenario: "effective-profile-sandbox", want: "not read-only"},
-		{name: "ephemeral", scenario: "effective-profile-ephemeral", want: "not ephemeral"},
+	type profileCase struct {
+		name               string
+		scenario           string
+		want               string
+		wantEffectiveModel string
+		missingThreadID    bool
+	}
+	profileCases := []profileCase{
+		{name: "valid", scenario: "success", wantEffectiveModel: "canary-rerouted"},
+		{name: "approval", scenario: "effective-profile-approval", want: "not never", wantEffectiveModel: "canary-rerouted"},
+		{name: "sandbox", scenario: "effective-profile-sandbox", want: "not read-only", wantEffectiveModel: "canary-rerouted"},
+		{name: "ephemeral", scenario: "effective-profile-ephemeral", want: "not ephemeral", wantEffectiveModel: "canary-rerouted"},
+		{name: "missing-thread-id-approval", scenario: "missing-thread-id-approval", want: "not never", wantEffectiveModel: "canary-start", missingThreadID: true},
+		{name: "missing-thread-id-sandbox", scenario: "missing-thread-id-sandbox", want: "not read-only", wantEffectiveModel: "canary-start", missingThreadID: true},
+		{name: "missing-thread-id-ephemeral", scenario: "missing-thread-id-ephemeral", want: "not ephemeral", wantEffectiveModel: "canary-start", missingThreadID: true},
 	}
 	paths := []struct {
 		name string
-		call func(*Caller) (codexsdk.StartedThreadRun, error)
+		call func(*testing.T, *Caller, profileCase) (codexsdk.StartedThreadRun, error)
 	}{
-		{name: "Call", call: func(caller *Caller) (codexsdk.StartedThreadRun, error) {
-			response, err := caller.Call(context.Background(), validRequest())
-			details, _ := response.ProviderDetails.(Details)
-			return details.Run, err
-		}},
-		{name: "CallDetailed", call: func(caller *Caller) (codexsdk.StartedThreadRun, error) {
-			return caller.CallDetailed(context.Background(), validRequest())
-		}},
-		{name: "CallStream", call: func(caller *Caller) (codexsdk.StartedThreadRun, error) {
-			stream, err := caller.CallStream(context.Background(), validRequest())
-			if err != nil {
-				return codexsdk.StartedThreadRun{}, err
-			}
-			return stream.Wait(context.Background())
-		}},
-	}
-
-	for _, profileCase := range profileCases {
-		for _, path := range paths {
-			t.Run(profileCase.name+"/"+path.name, func(t *testing.T) {
-				client, caller := canaryCaller(t, profileCase.scenario, codexsdk.ClientOptions{})
-				defer closeCanary(t, client)
-				run, err := path.call(caller)
-				if profileCase.want == "" {
-					if err != nil {
-						t.Fatalf("call error = %v", err)
-					}
-				} else if !errors.Is(err, ErrEffectiveProfile) || !strings.Contains(err.Error(), profileCase.want) {
-					t.Fatalf("call error = %v, want ErrEffectiveProfile containing %q", err, profileCase.want)
-				}
-				if run.Start.Thread.ID != "thread-1" || run.Run.Turn.Status != protocolv2.TurnStatusCompleted || len(run.Run.Notifications) != 4 {
-					t.Fatalf("exact run = %#v", run)
-				}
-			})
-		}
-	}
-}
-
-func TestMissingThreadIDProfileContractAcrossPublicCallPaths(t *testing.T) {
-	profileCases := []struct {
-		name     string
-		scenario string
-		want     string
-	}{
-		{name: "approval", scenario: "missing-thread-id-approval", want: "not never"},
-		{name: "sandbox", scenario: "missing-thread-id-sandbox", want: "not read-only"},
-		{name: "ephemeral", scenario: "missing-thread-id-ephemeral", want: "not ephemeral"},
-	}
-	paths := []struct {
-		name string
-		call func(*testing.T, *Caller) (codexsdk.StartedThreadRun, error)
-	}{
-		{name: "Call", call: func(t *testing.T, caller *Caller) (codexsdk.StartedThreadRun, error) {
+		{name: "Call", call: func(t *testing.T, caller *Caller, profileCase profileCase) (codexsdk.StartedThreadRun, error) {
 			t.Helper()
 			response, err := caller.Call(context.Background(), validRequest())
-			if response.Execution.ProviderName != "codex" || response.Execution.EffectiveModel != "canary-start" {
+			if response.Execution.ProviderName != "codex" || response.Execution.EffectiveModel != profileCase.wantEffectiveModel {
 				t.Fatalf("neutral evidence = %#v, want decoded start projection", response.Execution)
 			}
 			details, ok := response.ProviderDetails.(Details)
@@ -196,10 +150,10 @@ func TestMissingThreadIDProfileContractAcrossPublicCallPaths(t *testing.T) {
 			}
 			return details.Run, err
 		}},
-		{name: "CallDetailed", call: func(_ *testing.T, caller *Caller) (codexsdk.StartedThreadRun, error) {
+		{name: "CallDetailed", call: func(_ *testing.T, caller *Caller, _ profileCase) (codexsdk.StartedThreadRun, error) {
 			return caller.CallDetailed(context.Background(), validRequest())
 		}},
-		{name: "Stream", call: func(t *testing.T, caller *Caller) (codexsdk.StartedThreadRun, error) {
+		{name: "CallStream", call: func(t *testing.T, caller *Caller, _ profileCase) (codexsdk.StartedThreadRun, error) {
 			t.Helper()
 			stream, err := caller.CallStream(context.Background(), validRequest())
 			if err != nil {
@@ -207,8 +161,8 @@ func TestMissingThreadIDProfileContractAcrossPublicCallPaths(t *testing.T) {
 			}
 			run, waitErr := stream.Wait(context.Background())
 			streamErr := stream.Err()
-			if !errors.Is(streamErr, codexsdk.ErrMissingThreadID) || !errors.Is(streamErr, ErrEffectiveProfile) || streamErr.Error() != waitErr.Error() {
-				t.Fatalf("Err = %v, Wait error = %v, want stable missing-thread and profile causes", streamErr, waitErr)
+			if (waitErr == nil) != (streamErr == nil) || (waitErr != nil && streamErr.Error() != waitErr.Error()) {
+				t.Fatalf("Err = %v, Wait error = %v, want stable terminal causes", streamErr, waitErr)
 			}
 			return run, waitErr
 		}},
@@ -219,12 +173,25 @@ func TestMissingThreadIDProfileContractAcrossPublicCallPaths(t *testing.T) {
 			t.Run(profileCase.name+"/"+path.name, func(t *testing.T) {
 				client, caller := canaryCaller(t, profileCase.scenario, codexsdk.ClientOptions{})
 				defer closeCanary(t, client)
-				run, err := path.call(t, caller)
-				if !errors.Is(err, codexsdk.ErrMissingThreadID) || !errors.Is(err, ErrEffectiveProfile) || !strings.Contains(err.Error(), profileCase.want) {
-					t.Fatalf("call error = %v, want missing-thread and profile causes containing %q", err, profileCase.want)
+				run, err := path.call(t, caller, profileCase)
+				if profileCase.want == "" {
+					if err != nil {
+						t.Fatalf("call error = %v", err)
+					}
+				} else if profileCase.missingThreadID {
+					requireMissingThreadProfileError(t, err, profileCase.want)
+				} else if !errors.Is(err, ErrEffectiveProfile) || !strings.Contains(err.Error(), profileCase.want) {
+					t.Fatalf("call error = %v, want ErrEffectiveProfile containing %q", err, profileCase.want)
 				}
-				if run.Start.Thread.ID != "" || run.Start.Model != "canary-start" || run.Start.CWD != "/workspace" || run.Run.Turn.ID != "" {
-					t.Fatalf("exact partial run = %#v, want decoded start without lifecycle continuation", run)
+				if run.Start.Model != "canary-start" || run.Start.CWD != "/workspace" {
+					t.Fatalf("decoded start evidence = %#v", run.Start)
+				}
+				if profileCase.missingThreadID {
+					if run.Start.Thread.ID != "" || run.Run.Turn.ID != "" {
+						t.Fatalf("exact partial run = %#v, want no lifecycle continuation", run)
+					}
+				} else if run.Start.Thread.ID != "thread-1" || run.Run.Turn.Status != protocolv2.TurnStatusCompleted || len(run.Run.Notifications) != 4 {
+					t.Fatalf("exact terminal run = %#v", run)
 				}
 			})
 		}
