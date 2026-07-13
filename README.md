@@ -221,8 +221,9 @@ three-layer canaries. Historical proposal documents are design context only and
 are not build, CI, or release gates. Every pushed `v*` tag runs the
 [`proxy-tag-consumer` workflow](.github/workflows/proxy-tag-consumer.yml), which
 waits at most ten minutes for the exact tag on `proxy.golang.org`, records
-resolved versions and sums, and runs a typed clean consumer without `replace`,
-`exclude`, `go.work`, or pseudo-version upstreams.
+the tagged compatibility contract digest plus exact declared and resolved
+versions and sums, and runs a typed clean consumer without `replace`, `exclude`,
+`go.work`, or pseudo-version upstreams.
 
 This project is MIT licensed. Dependency provenance is recorded in
 [`THIRD_PARTY_NOTICES.md`](THIRD_PARTY_NOTICES.md).

@@ -2,7 +2,6 @@ package architecture
 
 import (
 	"bufio"
-	"encoding/json"
 	"fmt"
 	"go/ast"
 	"go/parser"
@@ -12,24 +11,9 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
-)
 
-type compatibilityContract struct {
-	FormatVersion int `json:"format_version"`
-	Caller        struct {
-		Module       string `json:"module"`
-		APIInventory string `json:"api_inventory"`
-	} `json:"caller"`
-	Dependencies []struct {
-		Module  string `json:"module"`
-		Version string `json:"version"`
-	} `json:"dependencies"`
-	Gates map[string]struct {
-		Path     string `json:"path"`
-		Kind     string `json:"kind"`
-		Selector string `json:"selector"`
-	} `json:"gates"`
-}
+	"github.com/ronhuafeng/llmcaller-codex-go/internal/compatibilitycontract"
+)
 
 func TestCompatibilityContractMatchesResolvedModuleGraph(t *testing.T) {
 	root := repoRoot(t)
@@ -37,8 +21,8 @@ func TestCompatibilityContractMatchesResolvedModuleGraph(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	var contract compatibilityContract
-	if err := json.Unmarshal(data, &contract); err != nil {
+	contract, err := compatibilitycontract.Decode(data)
+	if err != nil {
 		t.Fatal(err)
 	}
 	if contract.FormatVersion != 1 {
@@ -189,6 +173,7 @@ func TestProxyTagConsumerWorkflowIsTagTriggeredAndBounded(t *testing.T) {
 	}
 	for _, required := range []string{
 		`go run ./internal/cmd/proxyconsumer`,
+		`-compatibility compatibility.json`,
 		`-proxy https://proxy.golang.org`,
 		`-timeout 10m`,
 		`-retry-interval 15s`,

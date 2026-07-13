@@ -5,6 +5,7 @@ package main
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"errors"
 	"flag"
@@ -17,6 +18,8 @@ import (
 	"sort"
 	"strings"
 	"time"
+
+	"github.com/ronhuafeng/llmcaller-codex-go/internal/compatibilitycontract"
 )
 
 const (
@@ -42,8 +45,15 @@ type moduleEdit struct {
 	Exclude []any `json:"Exclude"`
 }
 
+type compatibilityTuple struct {
+	FormatVersion int
+	Digest        string
+	Versions      map[string]string
+}
+
 type config struct {
 	tag                string
+	compatibilityPath  string
 	proxy              string
 	propagationTimeout time.Duration
 	retryInterval      time.Duration
@@ -54,6 +64,7 @@ type config struct {
 func main() {
 	var options config
 	flag.StringVar(&options.tag, "tag", os.Getenv("GITHUB_REF_NAME"), "exact caller tag to resolve")
+	flag.StringVar(&options.compatibilityPath, "compatibility", "compatibility.json", "compatibility contract from the tagged checkout")
 	flag.StringVar(&options.proxy, "proxy", "https://proxy.golang.org", "exclusive Go module proxy")
 	flag.DurationVar(&options.propagationTimeout, "timeout", 10*time.Minute, "maximum proxy propagation wait")
 	flag.DurationVar(&options.retryInterval, "retry-interval", 15*time.Second, "proxy retry interval")
@@ -72,6 +83,10 @@ func run(parent context.Context, options config) error {
 	}
 	if options.proxy == "" || options.propagationTimeout <= 0 || options.retryInterval <= 0 || options.validationTimeout <= 0 || options.commandTimeout <= 0 {
 		return errors.New("proxy and all timeout/retry bounds must be set")
+	}
+	tuple, err := loadCompatibilityTuple(options.compatibilityPath, options.tag)
+	if err != nil {
+		return err
 	}
 	workdir, err := os.MkdirTemp("", "llmcaller-proxy-consumer-")
 	if err != nil {
@@ -144,19 +159,52 @@ func run(parent context.Context, options config) error {
 	if err != nil {
 		return err
 	}
-	if err := validateResolvedModules(modules, options.tag); err != nil {
+	if err := validateResolvedModules(modules, tuple); err != nil {
 		return err
 	}
 	evidence, err := commandOutputBounded(validationCtx, options.commandTimeout, workdir, environment, "go", "run", ".")
 	if err != nil {
 		return err
 	}
-	fmt.Printf("proxy=%s caller_tag=%s\n", options.proxy, options.tag)
-	for _, module := range selectedModules(modules) {
-		fmt.Printf("module=%s version=%s sum=%s gomodsum=%s\n", module.Path, module.Version, module.Sum, module.GoModSum)
+	return writeEvidence(os.Stdout, options.proxy, tuple, modules, evidence)
+}
+
+func loadCompatibilityTuple(path string, callerTag string) (compatibilityTuple, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return compatibilityTuple{}, fmt.Errorf("read compatibility contract %q: %w", path, err)
 	}
-	fmt.Printf("call_evidence=%s\n", strings.TrimSpace(string(evidence)))
-	return nil
+	contract, err := compatibilitycontract.Decode(data)
+	if err != nil {
+		return compatibilityTuple{}, err
+	}
+	if contract.FormatVersion != 1 {
+		return compatibilityTuple{}, fmt.Errorf("compatibility format_version = %d, want 1", contract.FormatVersion)
+	}
+	if contract.Caller.Module != callerModule {
+		return compatibilityTuple{}, fmt.Errorf("compatibility caller module = %q, want %q", contract.Caller.Module, callerModule)
+	}
+	wanted := map[string]bool{llmkitModule: true, codexsdkModule: true}
+	versions := map[string]string{callerModule: callerTag}
+	for _, dependency := range contract.Dependencies {
+		if !wanted[dependency.Module] {
+			return compatibilityTuple{}, fmt.Errorf("unknown compatibility dependency %q", dependency.Module)
+		}
+		if _, duplicate := versions[dependency.Module]; duplicate {
+			return compatibilityTuple{}, fmt.Errorf("duplicate compatibility dependency %q", dependency.Module)
+		}
+		if !stableVersionRE.MatchString(dependency.Version) {
+			return compatibilityTuple{}, fmt.Errorf("compatibility dependency %s version %q is not exact stable SemVer", dependency.Module, dependency.Version)
+		}
+		versions[dependency.Module] = dependency.Version
+	}
+	for module := range wanted {
+		if _, ok := versions[module]; !ok {
+			return compatibilityTuple{}, fmt.Errorf("compatibility contract missing %s", module)
+		}
+	}
+	digest := sha256.Sum256(data)
+	return compatibilityTuple{FormatVersion: contract.FormatVersion, Digest: fmt.Sprintf("%x", digest), Versions: versions}, nil
 }
 
 func retryUntilAvailable(ctx context.Context, interval time.Duration, attempt func() error) error {
@@ -203,28 +251,41 @@ func decodeModuleGraph(data []byte) ([]moduleVersion, error) {
 	return modules, nil
 }
 
-func validateResolvedModules(modules []moduleVersion, callerTag string) error {
+func validateResolvedModules(modules []moduleVersion, expected compatibilityTuple) error {
 	byPath := make(map[string]moduleVersion, len(modules))
 	for _, module := range modules {
 		byPath[module.Path] = module
-	}
-	caller, ok := byPath[callerModule]
-	if !ok || caller.Version != callerTag {
-		return fmt.Errorf("resolved caller = %s@%s, want %s@%s", caller.Path, caller.Version, callerModule, callerTag)
 	}
 	for _, path := range []string{callerModule, llmkitModule, codexsdkModule} {
 		module, ok := byPath[path]
 		if !ok {
 			return fmt.Errorf("resolved module graph is missing %s", path)
 		}
-		if path != callerModule && !stableVersionRE.MatchString(module.Version) {
-			return fmt.Errorf("%s resolved to non-stable version %q", path, module.Version)
+		wantVersion, ok := expected.Versions[path]
+		if !ok {
+			return fmt.Errorf("compatibility tuple is missing %s", path)
+		}
+		if module.Version != wantVersion {
+			return fmt.Errorf("%s resolved to %s, compatibility contract requires %s", path, module.Version, wantVersion)
 		}
 		if module.Sum == "" || module.GoModSum == "" {
 			return fmt.Errorf("%s is missing module sum evidence", path)
 		}
 	}
 	return nil
+}
+
+func writeEvidence(w io.Writer, proxy string, tuple compatibilityTuple, modules []moduleVersion, callEvidence []byte) error {
+	if _, err := fmt.Fprintf(w, "proxy=%s caller_tag=%s\ncompatibility_format=%d\ncompatibility_sha256=%s\n", proxy, tuple.Versions[callerModule], tuple.FormatVersion, tuple.Digest); err != nil {
+		return err
+	}
+	for _, module := range selectedModules(modules) {
+		if _, err := fmt.Fprintf(w, "declared_module=%s declared_version=%s resolved_module=%s resolved_version=%s sum=%s gomodsum=%s\n", module.Path, tuple.Versions[module.Path], module.Path, module.Version, module.Sum, module.GoModSum); err != nil {
+			return err
+		}
+	}
+	_, err := fmt.Fprintf(w, "call_evidence=%s\n", strings.TrimSpace(string(callEvidence)))
+	return err
 }
 
 func selectedModules(modules []moduleVersion) []moduleVersion {
