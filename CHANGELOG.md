@@ -6,10 +6,20 @@ This project follows Semantic Versioning.
 
 ## [Unreleased]
 
+## [0.4.1] - 2026-07-13
+
+- Requires the published `llmkit-go v0.4.1` and `codexsdk-go v0.5.0` module
+  tags. The caller module graph contains no replacements, excludes, workspace
+  overrides, prereleases, or pseudo-versions.
+
 - Strengthened the proxy-backed tag consumer to read the tagged compatibility
   contract, require the exact declared caller/llmkit/codexsdk version tuple, and
   retain the contract digest, declared/resolved versions, sums, and typed call
   evidence for release review.
+- Removed stale API-inventory failure guidance that treated the historical v0.2
+  proposal as normative; current review guidance points to the canonical
+  inventory, active compatibility contract, release obligations, behavior
+  tests, and clean consumer.
 
 ## [0.4.0] - 2026-07-13
 
