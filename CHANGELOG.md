@@ -6,6 +6,9 @@ This project follows Semantic Versioning.
 
 ## [Unreleased]
 
+- Replaced the historical v0.2 proposal byte-mirror gate with a machine-readable
+  compatibility contract tied to resolved module tags, exported API inventory,
+  schema matrix, clean consumer, and complete three-layer canary.
 - Changed the handwritten API inventory to record only externally observable
   exported struct fields and methods, so private representation changes do not
   become compatibility obligations while public surface changes remain gated.

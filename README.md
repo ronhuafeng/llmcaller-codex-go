@@ -211,8 +211,12 @@ GOWORK=off go vet ./...
 GOWORK=off go test -race ./...
 ```
 
-The release process also byte-compares mirrored contracts and runs temporary
-all-heads and real-tag canaries without committed `replace` or `go.work` files.
+Active compatibility sources are machine-listed in
+[`compatibility.json`](compatibility.json): the exported API inventory, resolved
+upstream module tags, schema matrix, clean external consumer, and fast/full
+three-layer canaries. Historical proposal documents are design context only and
+are not build, CI, or release gates. Release evidence uses real tags through the
+Go module proxy without `replace`, `exclude`, `go.work`, or pseudo-versions.
 
 This project is MIT licensed. Dependency provenance is recorded in
 [`THIRD_PARTY_NOTICES.md`](THIRD_PARTY_NOTICES.md).
