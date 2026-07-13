@@ -31,16 +31,17 @@ overwriting them.
 - read-only thread and turn sandboxes;
 - never-approve thread and turn policies.
 
-The detailed path also checks the exact effective start response. The streaming
-path remains an unwrapped SDK escape hatch, so its consumer inspects the exact
-eventual result when effective-policy verification is required.
+The detailed and streaming paths both check the exact effective start response.
+The adapter-owned stream wrapper joins effective-profile errors with the SDK
+terminal cause while returning the complete exact result. Its typed `SDKStream`
+escape hatch preserves access to lower-level SDK operations.
 
 ## Result Depth
 
 `CallDetailed` is the exact execution core. `Call` projects only stable neutral
 facts while retaining the same exact run in typed `Details`. `CallStream` uses
-the same request construction and returns the exact SDK stream. Partial runs
-remain available when an error also occurs.
+the same request construction and returns the adapter-owned exact stream
+wrapper. Partial runs remain available when an SDK or profile error also occurs.
 
 ## Rejected Alternatives
 

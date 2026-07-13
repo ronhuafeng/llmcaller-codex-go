@@ -6,6 +6,12 @@ This project follows Semantic Versioning.
 
 ## [Unreleased]
 
+- Added an adapter-owned exact `Stream` wrapper so `CallStream` applies the same
+  effective read-only, never-approve, ephemeral postcondition as `CallDetailed`
+  while preserving full SDK results, notifications, lifecycle operations, and
+  a typed `SDKStream` escape hatch. SDK and `ErrEffectiveProfile` causes remain
+  distinguishable through `errors.Is`.
+
 ## [0.3.0] - 2026-07-13
 
 - Updated `llmkit-go` and `codexsdk-go` to their published `v0.3.0` stable
