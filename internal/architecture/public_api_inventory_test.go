@@ -8,8 +8,28 @@ import (
 	"reflect"
 	"slices"
 	"sort"
+	"strings"
 	"testing"
 )
+
+func TestPublicAPIInventoryFailureGuidanceUsesActiveContracts(t *testing.T) {
+	guidance := publicAPIMismatchMessage("type example.com/fixture.Added struct{}\n")
+	if strings.Contains(guidance, "normative plan") {
+		t.Fatalf("failure guidance still treats a historical plan as normative: %q", guidance)
+	}
+	for _, required := range []string{
+		"canonical allowlist",
+		"compatibility.json",
+		"changelog",
+		"migration",
+		"public behavior",
+		"clean consumer",
+	} {
+		if !strings.Contains(strings.ToLower(guidance), required) {
+			t.Errorf("failure guidance missing %q: %q", required, guidance)
+		}
+	}
+}
 
 func TestPublicAPIInventoryIgnoresPrivateStructLayout(t *testing.T) {
 	first := inventoryForSource(t, `package fixture
