@@ -6,6 +6,10 @@ This project follows Semantic Versioning.
 
 ## [Unreleased]
 
+- Added a `v*` tag-triggered, bounded-retry proxy consumer gate that resolves
+  the exact caller tag from `proxy.golang.org`, rejects non-stable upstream
+  versions and module overrides, records module sums, and runs a deterministic
+  typed three-layer call from a clean temporary module.
 - Replaced the historical v0.2 proposal byte-mirror gate with a machine-readable
   compatibility contract tied to resolved module tags, exported API inventory,
   schema matrix, clean consumer, and complete three-layer canary.

@@ -91,7 +91,7 @@ func TestCompatibilityContractMatchesResolvedModuleGraph(t *testing.T) {
 			t.Errorf("contract missing compatibility dependency %q", module)
 		}
 	}
-	for _, name := range []string{"clean_consumer", "exported_api", "fast_canary", "full_canary", "schema_matrix"} {
+	for _, name := range []string{"clean_consumer", "exported_api", "fast_canary", "full_canary", "proxy_tag_consumer", "schema_matrix"} {
 		if _, ok := contract.Gates[name]; !ok {
 			t.Errorf("contract missing gate %q", name)
 		}
@@ -172,6 +172,124 @@ func TestActiveGatesDoNotReferenceHistoricalProposal(t *testing.T) {
 			t.Errorf("active gate %s references historical proposal", relPath(root, path))
 		}
 	}
+}
+
+func TestProxyTagConsumerWorkflowIsTagTriggeredAndBounded(t *testing.T) {
+	root := repoRoot(t)
+	data, err := os.ReadFile(filepath.Join(root, ".github", "workflows", "proxy-tag-consumer.yml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	contract := parseProxyWorkflowContract(string(data))
+	if contract.TagPattern != `["v*"]` {
+		t.Errorf("proxy workflow on.push.tags = %q", contract.TagPattern)
+	}
+	if contract.CallerTag != `${{ github.ref_name }}` {
+		t.Errorf("proxy consumer CALLER_TAG = %q", contract.CallerTag)
+	}
+	for _, required := range []string{
+		`go run ./internal/cmd/proxyconsumer`,
+		`-proxy https://proxy.golang.org`,
+		`-timeout 10m`,
+		`-retry-interval 15s`,
+		`-validation-timeout 10m`,
+		`-command-timeout 5m`,
+	} {
+		if !strings.Contains(contract.Run, required) {
+			t.Errorf("proxy workflow run step missing %q", required)
+		}
+	}
+}
+
+func TestProxyWorkflowContractIgnoresUnrelatedStrings(t *testing.T) {
+	fixture := `on:
+  workflow_dispatch:
+jobs:
+  unrelated:
+    env:
+      CALLER_TAG: ${{ github.ref_name }}
+    steps:
+      - run: echo 'tags: ["v*"] go run ./internal/cmd/proxyconsumer -timeout 10m'
+  proxy-consumer:
+    steps:
+      - name: Not the resolver
+        run: echo no
+`
+	contract := parseProxyWorkflowContract(fixture)
+	if contract.TagPattern != "" || contract.CallerTag != "" || contract.Run != "" {
+		t.Fatalf("unrelated workflow strings satisfied contract: %#v", contract)
+	}
+}
+
+type proxyWorkflowContract struct {
+	TagPattern string
+	CallerTag  string
+	Run        string
+}
+
+func parseProxyWorkflowContract(workflow string) proxyWorkflowContract {
+	var contract proxyWorkflowContract
+	lines := strings.Split(workflow, "\n")
+	inOn := false
+	inPush := false
+	inProxyJob := false
+	inResolverStep := false
+	stepSection := ""
+	collectRun := false
+	for _, line := range lines {
+		trimmed := strings.TrimSpace(line)
+		if trimmed == "" || strings.HasPrefix(trimmed, "#") {
+			continue
+		}
+		indent := len(line) - len(strings.TrimLeft(line, " "))
+		if indent == 0 {
+			inOn = trimmed == "on:"
+			inPush = false
+			inProxyJob = false
+		}
+		if inOn && indent == 2 {
+			inPush = trimmed == "push:"
+		}
+		if inOn && inPush && indent == 4 && strings.HasPrefix(trimmed, "tags:") {
+			contract.TagPattern = strings.TrimSpace(strings.TrimPrefix(trimmed, "tags:"))
+		}
+		if indent == 2 {
+			inProxyJob = trimmed == "proxy-consumer:"
+			inResolverStep = false
+			collectRun = false
+		}
+		if !inProxyJob {
+			continue
+		}
+		if indent == 6 && strings.HasPrefix(trimmed, "- ") {
+			inResolverStep = strings.TrimSpace(strings.TrimPrefix(trimmed, "- name:")) == "Resolve exact tag and run clean consumer"
+			stepSection = ""
+			collectRun = false
+			continue
+		}
+		if !inResolverStep {
+			continue
+		}
+		if indent == 8 {
+			collectRun = trimmed == "run: |"
+			switch trimmed {
+			case "env:":
+				stepSection = "env"
+			case "run: |":
+				stepSection = "run"
+			default:
+				stepSection = ""
+			}
+			continue
+		}
+		if stepSection == "env" && indent == 10 && strings.HasPrefix(trimmed, "CALLER_TAG:") {
+			contract.CallerTag = strings.TrimSpace(strings.TrimPrefix(trimmed, "CALLER_TAG:"))
+		}
+		if collectRun && indent >= 10 {
+			contract.Run += trimmed + "\n"
+		}
+	}
+	return contract
 }
 
 func contractPath(t *testing.T, root string, path string) string {

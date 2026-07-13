@@ -33,6 +33,11 @@
       "path": "llmcaller/codex/three_layer_canary_test.go",
       "kind": "go_test",
       "selector": "TestThreeLayerCanaryFull"
+    },
+    "proxy_tag_consumer": {
+      "path": ".github/workflows/proxy-tag-consumer.yml",
+      "kind": "github_job",
+      "selector": "proxy-consumer"
     }
   }
 }
