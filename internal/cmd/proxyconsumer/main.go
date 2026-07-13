@@ -31,6 +31,7 @@ const (
 var (
 	callerVersionRE = regexp.MustCompile(`^v[0-9]+\.[0-9]+\.[0-9]+(?:[-+][0-9A-Za-z.-]+)?$`)
 	stableVersionRE = regexp.MustCompile(`^v[0-9]+\.[0-9]+\.[0-9]+$`)
+	commitHashRE    = regexp.MustCompile(`^[0-9a-fA-F]{40}(?:[0-9a-fA-F]{24})?$`)
 )
 
 type moduleVersion struct {
@@ -56,14 +57,27 @@ type moduleEdit struct {
 }
 
 type compatibilityTuple struct {
-	FormatVersion  int
+	FormatVersion int
+	Versions      map[string]string
+}
+
+type boundCompatibilityTuple struct {
+	compatibilityTuple
 	CheckoutDigest string
 	ProxyDigest    string
-	Versions       map[string]string
+}
+
+type callerProvenance struct {
+	OriginVCS  string
+	OriginURL  string
+	OriginHash string
+	OriginRef  string
+	TagCommit  string
 }
 
 type config struct {
 	tag                     string
+	tagCommit               string
 	compatibilityPath       string
 	moduleCompatibilityPath string
 	proxy                   string
@@ -71,11 +85,13 @@ type config struct {
 	retryInterval           time.Duration
 	validationTimeout       time.Duration
 	commandTimeout          time.Duration
+	evidenceWriter          io.Writer
 }
 
 func main() {
 	var options config
 	flag.StringVar(&options.tag, "tag", os.Getenv("GITHUB_REF_NAME"), "exact caller tag to resolve")
+	flag.StringVar(&options.tagCommit, "tag-commit", os.Getenv("GITHUB_SHA"), "checkout commit for the pushed tag, used as provenance fallback")
 	flag.StringVar(&options.compatibilityPath, "compatibility", "compatibility.json", "compatibility contract from the tagged checkout")
 	flag.StringVar(&options.moduleCompatibilityPath, "module-compatibility", "compatibility.json", "compatibility contract path relative to the proxy-resolved caller module")
 	flag.StringVar(&options.proxy, "proxy", "https://proxy.golang.org", "exclusive Go module proxy")
@@ -84,6 +100,7 @@ func main() {
 	flag.DurationVar(&options.validationTimeout, "validation-timeout", 10*time.Minute, "maximum post-resolution validation time")
 	flag.DurationVar(&options.commandTimeout, "command-timeout", 5*time.Minute, "maximum time for one Go command")
 	flag.Parse()
+	options.evidenceWriter = os.Stdout
 	if err := run(context.Background(), options); err != nil {
 		fmt.Fprintln(os.Stderr, "proxy consumer gate:", err)
 		os.Exit(1)
@@ -96,6 +113,9 @@ func run(parent context.Context, options config) error {
 	}
 	if options.proxy == "" || options.propagationTimeout <= 0 || options.retryInterval <= 0 || options.validationTimeout <= 0 || options.commandTimeout <= 0 {
 		return errors.New("proxy and all timeout/retry bounds must be set")
+	}
+	if options.evidenceWriter == nil {
+		return errors.New("evidence writer must be set")
 	}
 	if _, err := moduleRelativePath(".", options.moduleCompatibilityPath); err != nil {
 		return err
@@ -179,14 +199,18 @@ func run(parent context.Context, options config) error {
 	if err != nil {
 		return err
 	}
-	if err := validateResolvedModules(modules, tuple); err != nil {
+	if err := validateResolvedModules(modules, tuple.compatibilityTuple); err != nil {
+		return err
+	}
+	provenance, err := resolveCallerProvenance(modules, options.tagCommit)
+	if err != nil {
 		return err
 	}
 	evidence, err := commandOutputBounded(validationCtx, options.commandTimeout, workdir, environment, "go", "run", ".")
 	if err != nil {
 		return err
 	}
-	return writeEvidence(os.Stdout, options.proxy, tuple, modules, evidence)
+	return writeEvidence(options.evidenceWriter, options.proxy, tuple, modules, provenance, evidence)
 }
 
 func decodeCompatibilityTuple(data []byte, callerTag string) (compatibilityTuple, error) {
@@ -219,45 +243,46 @@ func decodeCompatibilityTuple(data []byte, callerTag string) (compatibilityTuple
 			return compatibilityTuple{}, fmt.Errorf("compatibility contract missing %s", module)
 		}
 	}
-	digest := sha256.Sum256(data)
-	return compatibilityTuple{FormatVersion: contract.FormatVersion, CheckoutDigest: fmt.Sprintf("%x", digest), Versions: versions}, nil
+	return compatibilityTuple{FormatVersion: contract.FormatVersion, Versions: versions}, nil
 }
 
-func bindCompatibilityTuple(checkoutPath string, moduleCompatibilityPath string, modules []moduleVersion, callerTag string) (compatibilityTuple, error) {
+func bindCompatibilityTuple(checkoutPath string, moduleCompatibilityPath string, modules []moduleVersion, callerTag string) (boundCompatibilityTuple, error) {
 	checkoutData, err := os.ReadFile(checkoutPath)
 	if err != nil {
-		return compatibilityTuple{}, fmt.Errorf("read checkout compatibility contract %q: %w", checkoutPath, err)
+		return boundCompatibilityTuple{}, fmt.Errorf("read checkout compatibility contract %q: %w", checkoutPath, err)
 	}
 	caller, err := resolvedModule(modules, callerModule)
 	if err != nil {
-		return compatibilityTuple{}, err
+		return boundCompatibilityTuple{}, err
 	}
 	if caller.Replace != nil {
-		return compatibilityTuple{}, fmt.Errorf("%s resolved through replacement module %s", callerModule, caller.Replace.Path)
+		return boundCompatibilityTuple{}, fmt.Errorf("%s resolved through replacement module %s", callerModule, caller.Replace.Path)
 	}
 	if caller.Dir == "" {
-		return compatibilityTuple{}, fmt.Errorf("%s has no proxy-resolved module directory", callerModule)
+		return boundCompatibilityTuple{}, fmt.Errorf("%s has no proxy-resolved module directory", callerModule)
 	}
 	moduleManifestPath, err := moduleRelativePath(caller.Dir, moduleCompatibilityPath)
 	if err != nil {
-		return compatibilityTuple{}, err
+		return boundCompatibilityTuple{}, err
 	}
 	proxyData, err := os.ReadFile(moduleManifestPath)
 	if err != nil {
-		return compatibilityTuple{}, fmt.Errorf("read proxy compatibility contract %q: %w", moduleManifestPath, err)
+		return boundCompatibilityTuple{}, fmt.Errorf("read proxy compatibility contract %q: %w", moduleManifestPath, err)
 	}
 	checkoutDigest := fmt.Sprintf("%x", sha256.Sum256(checkoutData))
 	proxyDigest := fmt.Sprintf("%x", sha256.Sum256(proxyData))
 	if checkoutDigest != proxyDigest {
-		return compatibilityTuple{}, fmt.Errorf("compatibility manifest digest mismatch: checkout %s, proxy module %s", checkoutDigest, proxyDigest)
+		return boundCompatibilityTuple{}, fmt.Errorf("compatibility manifest digest mismatch: checkout %s, proxy module %s", checkoutDigest, proxyDigest)
 	}
 	tuple, err := decodeCompatibilityTuple(checkoutData, callerTag)
 	if err != nil {
-		return compatibilityTuple{}, err
+		return boundCompatibilityTuple{}, err
 	}
-	tuple.CheckoutDigest = checkoutDigest
-	tuple.ProxyDigest = proxyDigest
-	return tuple, nil
+	return boundCompatibilityTuple{
+		compatibilityTuple: tuple,
+		CheckoutDigest:     checkoutDigest,
+		ProxyDigest:        proxyDigest,
+	}, nil
 }
 
 func mergeCallerResolution(modules []moduleVersion, resolution moduleVersion) ([]moduleVersion, error) {
@@ -283,6 +308,37 @@ func resolvedModule(modules []moduleVersion, path string) (moduleVersion, error)
 		}
 	}
 	return moduleVersion{}, fmt.Errorf("resolved module graph is missing %s", path)
+}
+
+func resolveCallerProvenance(modules []moduleVersion, tagCommit string) (callerProvenance, error) {
+	caller, err := resolvedModule(modules, callerModule)
+	if err != nil {
+		return callerProvenance{}, err
+	}
+	provenance := callerProvenance{TagCommit: tagCommit}
+	if caller.Origin != nil {
+		provenance.OriginVCS = caller.Origin.VCS
+		provenance.OriginURL = caller.Origin.URL
+		provenance.OriginHash = caller.Origin.Hash
+		provenance.OriginRef = caller.Origin.Ref
+	}
+	if err := validateCallerProvenance(provenance); err != nil {
+		return callerProvenance{}, err
+	}
+	return provenance, nil
+}
+
+func validateCallerProvenance(provenance callerProvenance) error {
+	if provenance.OriginHash != "" && !commitHashRE.MatchString(provenance.OriginHash) {
+		return fmt.Errorf("caller origin hash %q is not a full commit hash", provenance.OriginHash)
+	}
+	if provenance.TagCommit != "" && !commitHashRE.MatchString(provenance.TagCommit) {
+		return fmt.Errorf("tag commit %q is not a full commit hash", provenance.TagCommit)
+	}
+	if provenance.OriginHash == "" && provenance.TagCommit == "" {
+		return errors.New("caller provenance is unavailable: proxy origin has no hash and no checkout tag commit was supplied")
+	}
+	return nil
 }
 
 func moduleRelativePath(moduleDir string, relativePath string) (string, error) {
@@ -364,7 +420,10 @@ func validateResolvedModules(modules []moduleVersion, expected compatibilityTupl
 	return nil
 }
 
-func writeEvidence(w io.Writer, proxy string, tuple compatibilityTuple, modules []moduleVersion, callEvidence []byte) error {
+func writeEvidence(w io.Writer, proxy string, tuple boundCompatibilityTuple, modules []moduleVersion, provenance callerProvenance, callEvidence []byte) error {
+	if err := validateCallerProvenance(provenance); err != nil {
+		return err
+	}
 	if _, err := fmt.Fprintf(w, "proxy=%s caller_tag=%s\ncompatibility_format=%d\ncheckout_compatibility_sha256=%s\nproxy_compatibility_sha256=%s\n", proxy, tuple.Versions[callerModule], tuple.FormatVersion, tuple.CheckoutDigest, tuple.ProxyDigest); err != nil {
 		return err
 	}
@@ -372,11 +431,9 @@ func writeEvidence(w io.Writer, proxy string, tuple compatibilityTuple, modules 
 		if _, err := fmt.Fprintf(w, "declared_module=%s declared_version=%s resolved_module=%s resolved_version=%s sum=%s gomodsum=%s\n", module.Path, tuple.Versions[module.Path], module.Path, module.Version, module.Sum, module.GoModSum); err != nil {
 			return err
 		}
-		if module.Path == callerModule && module.Origin != nil {
-			if _, err := fmt.Fprintf(w, "caller_origin_vcs=%s caller_origin_url=%s caller_origin_hash=%s caller_origin_ref=%s\n", module.Origin.VCS, module.Origin.URL, module.Origin.Hash, module.Origin.Ref); err != nil {
-				return err
-			}
-		}
+	}
+	if _, err := fmt.Fprintf(w, "caller_origin_vcs=%s caller_origin_url=%s caller_origin_hash=%s caller_origin_ref=%s caller_tag_commit=%s\n", provenance.OriginVCS, provenance.OriginURL, provenance.OriginHash, provenance.OriginRef, provenance.TagCommit); err != nil {
+		return err
 	}
 	_, err := fmt.Fprintf(w, "call_evidence=%s\n", strings.TrimSpace(string(callEvidence)))
 	return err

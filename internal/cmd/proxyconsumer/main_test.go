@@ -12,8 +12,7 @@ import (
 	"time"
 )
 
-func TestDecodeCompatibilityTupleRejectsMalformedOrIncompleteContracts(t *testing.T) {
-	valid := `{
+const validCompatibilityManifest = `{
   "format_version": 1,
   "caller": {"module": "github.com/ronhuafeng/llmcaller-codex-go", "api_inventory": "inventory.txt"},
   "dependencies": [
@@ -22,20 +21,22 @@ func TestDecodeCompatibilityTupleRejectsMalformedOrIncompleteContracts(t *testin
   ],
   "gates": {}
 }`
+
+func TestDecodeCompatibilityTupleRejectsMalformedOrIncompleteContracts(t *testing.T) {
 	tests := []struct {
 		name     string
 		manifest string
 		want     string
 	}{
-		{name: "unsupported format", manifest: strings.Replace(valid, `"format_version": 1`, `"format_version": 2`, 1), want: "format_version"},
-		{name: "wrong caller", manifest: strings.Replace(valid, callerModule, "example.com/wrong-caller", 1), want: "caller module"},
-		{name: "missing llmkit", manifest: strings.Replace(valid, fmt.Sprintf("    {\"module\": %q, \"version\": \"v0.4.0\"},\n", llmkitModule), "", 1), want: llmkitModule},
-		{name: "duplicate codexsdk", manifest: strings.Replace(valid, fmt.Sprintf(`    {"module": %q, "version": "v0.4.0"}`, llmkitModule), fmt.Sprintf(`    {"module": %q, "version": "v0.4.0"}`, codexsdkModule), 1), want: "duplicate"},
-		{name: "unknown dependency", manifest: strings.Replace(valid, llmkitModule, "example.com/unknown", 1), want: "unknown compatibility dependency"},
-		{name: "empty version", manifest: strings.Replace(valid, `"version": "v0.4.0"`, `"version": ""`, 1), want: "exact stable SemVer"},
-		{name: "prerelease", manifest: strings.Replace(valid, `"version": "v0.4.0"`, `"version": "v0.4.1-rc.1"`, 1), want: "exact stable SemVer"},
-		{name: "pseudo-version", manifest: strings.Replace(valid, `"version": "v0.4.0"`, `"version": "v0.0.0-20260713000000-deadbeefdead"`, 1), want: "exact stable SemVer"},
-		{name: "trailing JSON", manifest: valid + `{}`, want: "decode compatibility contract"},
+		{name: "unsupported format", manifest: strings.Replace(validCompatibilityManifest, `"format_version": 1`, `"format_version": 2`, 1), want: "format_version"},
+		{name: "wrong caller", manifest: strings.Replace(validCompatibilityManifest, callerModule, "example.com/wrong-caller", 1), want: "caller module"},
+		{name: "missing llmkit", manifest: strings.Replace(validCompatibilityManifest, fmt.Sprintf("    {\"module\": %q, \"version\": \"v0.4.0\"},\n", llmkitModule), "", 1), want: llmkitModule},
+		{name: "duplicate codexsdk", manifest: strings.Replace(validCompatibilityManifest, fmt.Sprintf(`    {"module": %q, "version": "v0.4.0"}`, llmkitModule), fmt.Sprintf(`    {"module": %q, "version": "v0.4.0"}`, codexsdkModule), 1), want: "duplicate"},
+		{name: "unknown dependency", manifest: strings.Replace(validCompatibilityManifest, llmkitModule, "example.com/unknown", 1), want: "unknown compatibility dependency"},
+		{name: "empty version", manifest: strings.Replace(validCompatibilityManifest, `"version": "v0.4.0"`, `"version": ""`, 1), want: "exact stable SemVer"},
+		{name: "prerelease", manifest: strings.Replace(validCompatibilityManifest, `"version": "v0.4.0"`, `"version": "v0.4.1-rc.1"`, 1), want: "exact stable SemVer"},
+		{name: "pseudo-version", manifest: strings.Replace(validCompatibilityManifest, `"version": "v0.4.0"`, `"version": "v0.0.0-20260713000000-deadbeefdead"`, 1), want: "exact stable SemVer"},
+		{name: "trailing JSON", manifest: validCompatibilityManifest + `{}`, want: "decode compatibility contract"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -46,11 +47,11 @@ func TestDecodeCompatibilityTupleRejectsMalformedOrIncompleteContracts(t *testin
 		})
 	}
 
-	tuple, err := decodeCompatibilityTuple([]byte(valid), "v0.4.0")
+	tuple, err := decodeCompatibilityTuple([]byte(validCompatibilityManifest), "v0.4.0")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if tuple.FormatVersion != 1 || len(tuple.CheckoutDigest) != 64 {
+	if tuple.FormatVersion != 1 {
 		t.Fatalf("tuple metadata = %#v", tuple)
 	}
 	for module, want := range map[string]string{callerModule: "v0.4.0", llmkitModule: "v0.4.0", codexsdkModule: "v0.4.0"} {
@@ -124,15 +125,7 @@ func TestValidateResolvedModulesRequiresExactCompatibilityTuple(t *testing.T) {
 }
 
 func TestBindCompatibilityTupleRequiresProxyArtifactDigestMatch(t *testing.T) {
-	manifest := []byte(`{
-  "format_version": 1,
-  "caller": {"module": "github.com/ronhuafeng/llmcaller-codex-go", "api_inventory": "inventory.txt"},
-  "dependencies": [
-    {"module": "github.com/ronhuafeng/llmkit-go", "version": "v0.4.0"},
-    {"module": "github.com/ronhuafeng/codexsdk-go", "version": "v0.4.0"}
-  ],
-  "gates": {}
-}`)
+	manifest := []byte(validCompatibilityManifest)
 	checkoutDir := t.TempDir()
 	moduleDir := t.TempDir()
 	checkoutPath := filepath.Join(checkoutDir, "compatibility.json")
@@ -161,15 +154,7 @@ func TestBindCompatibilityTupleRequiresProxyArtifactDigestMatch(t *testing.T) {
 }
 
 func TestBindCompatibilityTupleRejectsMissingUnreadableOrReplacedProxyArtifact(t *testing.T) {
-	manifest := []byte(`{
-  "format_version": 1,
-  "caller": {"module": "github.com/ronhuafeng/llmcaller-codex-go"},
-  "dependencies": [
-    {"module": "github.com/ronhuafeng/llmkit-go", "version": "v0.4.0"},
-    {"module": "github.com/ronhuafeng/codexsdk-go", "version": "v0.4.0"}
-  ],
-  "gates": {}
-}`)
+	manifest := []byte(validCompatibilityManifest)
 	checkoutPath := filepath.Join(t.TempDir(), "compatibility.json")
 	if err := os.WriteFile(checkoutPath, manifest, 0o600); err != nil {
 		t.Fatal(err)
@@ -276,22 +261,68 @@ func TestMergeCallerResolutionCarriesProxyOriginIntoGraphEvidence(t *testing.T) 
 	}
 }
 
+func TestResolveCallerProvenanceRequiresOriginOrTagCommit(t *testing.T) {
+	originHash := strings.Repeat("a", 40)
+	caller := moduleVersion{Path: callerModule, Origin: &moduleOrigin{VCS: "git", Hash: originHash, Ref: "refs/tags/v0.4.0"}}
+	provenance, err := resolveCallerProvenance([]moduleVersion{caller}, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if provenance.OriginHash != originHash || provenance.OriginRef != "refs/tags/v0.4.0" {
+		t.Fatalf("origin provenance = %#v", provenance)
+	}
+
+	tagCommit := strings.Repeat("b", 40)
+	provenance, err = resolveCallerProvenance([]moduleVersion{{Path: callerModule}}, tagCommit)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if provenance.TagCommit != tagCommit {
+		t.Fatalf("fallback provenance = %#v", provenance)
+	}
+
+	for _, tt := range []struct {
+		name      string
+		module    moduleVersion
+		tagCommit string
+		want      string
+	}{
+		{name: "neither source", module: moduleVersion{Path: callerModule}, want: "caller provenance is unavailable"},
+		{name: "ref without hash", module: moduleVersion{Path: callerModule, Origin: &moduleOrigin{Ref: "refs/tags/v0.4.0"}}, want: "caller provenance is unavailable"},
+		{name: "invalid fallback", module: moduleVersion{Path: callerModule}, tagCommit: "not-a-commit", want: "tag commit"},
+		{name: "invalid origin", module: moduleVersion{Path: callerModule, Origin: &moduleOrigin{Hash: "not-a-hash"}}, want: "origin hash"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			_, err := resolveCallerProvenance([]moduleVersion{tt.module}, tt.tagCommit)
+			if err == nil || !strings.Contains(err.Error(), tt.want) {
+				t.Fatalf("resolveCallerProvenance error = %v, want %q", err, tt.want)
+			}
+		})
+	}
+}
+
 func TestWriteEvidenceRecordsDeclaredAndResolvedTuple(t *testing.T) {
-	tuple := compatibilityTuple{
-		FormatVersion:  1,
+	tuple := boundCompatibilityTuple{
+		compatibilityTuple: compatibilityTuple{
+			FormatVersion: 1,
+			Versions: map[string]string{
+				callerModule: "v0.4.0", llmkitModule: "v0.4.0", codexsdkModule: "v0.4.0",
+			},
+		},
 		CheckoutDigest: strings.Repeat("a", 64),
 		ProxyDigest:    strings.Repeat("a", 64),
-		Versions: map[string]string{
-			callerModule: "v0.4.0", llmkitModule: "v0.4.0", codexsdkModule: "v0.4.0",
-		},
 	}
 	modules := []moduleVersion{
 		{Path: codexsdkModule, Version: "v0.4.0", Sum: "h1:sdk", GoModSum: "h1:sdk-mod"},
-		{Path: callerModule, Version: "v0.4.0", Sum: "h1:caller", GoModSum: "h1:caller-mod", Origin: &moduleOrigin{VCS: "git", URL: "https://github.com/ronhuafeng/llmcaller-codex-go", Hash: "deadbeef", Ref: "refs/tags/v0.4.0"}},
+		{Path: callerModule, Version: "v0.4.0", Sum: "h1:caller", GoModSum: "h1:caller-mod"},
 		{Path: llmkitModule, Version: "v0.4.0", Sum: "h1:kit", GoModSum: "h1:kit-mod"},
 	}
+	provenance := callerProvenance{
+		OriginVCS: "git", OriginURL: "https://github.com/ronhuafeng/llmcaller-codex-go",
+		OriginHash: strings.Repeat("d", 40), OriginRef: "refs/tags/v0.4.0",
+	}
 	var output bytes.Buffer
-	if err := writeEvidence(&output, "https://proxy.golang.org", tuple, modules, []byte(`{"answer":true}`)); err != nil {
+	if err := writeEvidence(&output, "https://proxy.golang.org", tuple, modules, provenance, []byte(`{"answer":true}`)); err != nil {
 		t.Fatal(err)
 	}
 	text := output.String()
@@ -299,7 +330,7 @@ func TestWriteEvidenceRecordsDeclaredAndResolvedTuple(t *testing.T) {
 		"compatibility_format=1", "checkout_compatibility_sha256=" + strings.Repeat("a", 64),
 		"proxy_compatibility_sha256=" + strings.Repeat("a", 64),
 		"declared_module=" + callerModule + " declared_version=v0.4.0 resolved_module=" + callerModule + " resolved_version=v0.4.0 sum=h1:caller gomodsum=h1:caller-mod",
-		"caller_origin_vcs=git caller_origin_url=https://github.com/ronhuafeng/llmcaller-codex-go caller_origin_hash=deadbeef caller_origin_ref=refs/tags/v0.4.0",
+		"caller_origin_vcs=git caller_origin_url=https://github.com/ronhuafeng/llmcaller-codex-go caller_origin_hash=" + strings.Repeat("d", 40) + " caller_origin_ref=refs/tags/v0.4.0 caller_tag_commit=",
 		"declared_module=" + llmkitModule + " declared_version=v0.4.0 resolved_module=" + llmkitModule + " resolved_version=v0.4.0 sum=h1:kit gomodsum=h1:kit-mod",
 		"declared_module=" + codexsdkModule + " declared_version=v0.4.0 resolved_module=" + codexsdkModule + " resolved_version=v0.4.0 sum=h1:sdk gomodsum=h1:sdk-mod",
 		`call_evidence={"answer":true}`,
@@ -307,6 +338,17 @@ func TestWriteEvidenceRecordsDeclaredAndResolvedTuple(t *testing.T) {
 		if !strings.Contains(text, want) {
 			t.Errorf("evidence missing %q:\n%s", want, text)
 		}
+	}
+	if err := writeEvidence(&bytes.Buffer{}, "https://proxy.golang.org", tuple, modules, callerProvenance{}, []byte(`{}`)); err == nil || !strings.Contains(err.Error(), "provenance is unavailable") {
+		t.Fatalf("missing provenance write error = %v", err)
+	}
+	var fallbackOutput bytes.Buffer
+	tagCommit := strings.Repeat("e", 40)
+	if err := writeEvidence(&fallbackOutput, "https://proxy.golang.org", tuple, modules, callerProvenance{TagCommit: tagCommit}, []byte(`{}`)); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(fallbackOutput.String(), "caller_origin_hash= caller_origin_ref= caller_tag_commit="+tagCommit) {
+		t.Fatalf("fallback provenance evidence missing:\n%s", fallbackOutput.String())
 	}
 }
 
@@ -368,4 +410,88 @@ func TestProxyEnvironmentUsesExclusiveCleanModuleCache(t *testing.T) {
 			t.Errorf("%s = %q, want %q", key, got, want)
 		}
 	}
+}
+
+func TestPublishedStableTagProxyConsumer(t *testing.T) {
+	tag := os.Getenv("LLMCALLER_PROXY_TAG")
+	if tag == "" {
+		t.Skip("set LLMCALLER_PROXY_TAG to run the public-proxy stable-tag integration")
+	}
+	repositoryRoot, err := filepath.Abs(filepath.Join("..", "..", ".."))
+	if err != nil {
+		t.Fatal(err)
+	}
+	compatibilityPath := filepath.Join(repositoryRoot, "compatibility.json")
+	contractData, err := os.ReadFile(compatibilityPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	expected, err := decodeCompatibilityTuple(contractData, tag)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 25*time.Minute)
+	defer cancel()
+	var output bytes.Buffer
+	err = run(ctx, config{
+		tag:                     tag,
+		tagCommit:               os.Getenv("LLMCALLER_PROXY_TAG_COMMIT"),
+		compatibilityPath:       compatibilityPath,
+		moduleCompatibilityPath: "compatibility.json",
+		proxy:                   "https://proxy.golang.org",
+		propagationTimeout:      10 * time.Minute,
+		retryInterval:           15 * time.Second,
+		validationTimeout:       10 * time.Minute,
+		commandTimeout:          5 * time.Minute,
+		evidenceWriter:          &output,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	fields := parseEvidenceFields(output.String())
+	if fields["proxy"] != "https://proxy.golang.org" || fields["caller_tag"] != tag {
+		t.Errorf("proxy/tag evidence = %q / %q", fields["proxy"], fields["caller_tag"])
+	}
+	checkoutDigest := fields["checkout_compatibility_sha256"]
+	if checkoutDigest == "" || fields["proxy_compatibility_sha256"] != checkoutDigest {
+		t.Errorf("bound manifest digests = checkout %q proxy %q", checkoutDigest, fields["proxy_compatibility_sha256"])
+	}
+	for module, version := range expected.Versions {
+		line := evidenceLine(output.String(), "declared_module="+module+" ")
+		for _, required := range []string{"declared_version=" + version, "resolved_version=" + version, "sum=h1:", "gomodsum=h1:"} {
+			if !strings.Contains(line, required) {
+				t.Errorf("%s evidence missing %q: %s", module, required, line)
+			}
+		}
+	}
+	if fields["caller_origin_hash"] == "" && fields["caller_tag_commit"] == "" {
+		t.Error("stable-tag evidence has neither caller origin hash nor checkout tag commit")
+	}
+	if !strings.Contains(fields["call_evidence"], `"answer":true`) {
+		t.Errorf("typed call evidence = %q", fields["call_evidence"])
+	}
+}
+
+func parseEvidenceFields(evidence string) map[string]string {
+	fields := make(map[string]string)
+	for _, line := range strings.Split(evidence, "\n") {
+		for _, field := range strings.Fields(line) {
+			key, value, ok := strings.Cut(field, "=")
+			if ok {
+				fields[key] = value
+			}
+		}
+	}
+	return fields
+}
+
+func evidenceLine(evidence string, prefix string) string {
+	for _, line := range strings.Split(evidence, "\n") {
+		if strings.HasPrefix(line, prefix) {
+			return line
+		}
+	}
+	return ""
 }

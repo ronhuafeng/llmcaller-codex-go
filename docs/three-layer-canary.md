@@ -24,5 +24,6 @@ unreadable shipped contracts and module/workspace overrides, then executes a
 typed call using a deterministic fake at the SDK runner seam. The proxy
 propagation retry is bounded to ten minutes; subsequent validation has its own
 ten-minute total and five-minute per-command bounds. Both contract digests,
-caller origin, module graph, and call evidence are retained as a workflow
-artifact.
+caller provenance, module graph, and call evidence are retained as a workflow
+artifact. Provenance is fail closed: if the proxy query has no origin hash, the
+workflow-provided checkout tag commit must be recorded instead.

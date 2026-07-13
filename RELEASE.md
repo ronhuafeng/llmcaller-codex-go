@@ -48,18 +48,32 @@ and resolved module versions, caller module zip and go.mod sums, available
 caller origin hash/tag ref, and deterministic typed call evidence under a
 separate ten-minute validation bound and five-minute per-command bound. The two
 contract digests must match before every resolved internal module is compared
-with the declared compatibility tuple. A timeout, missing or unreadable shipped
-contract, replacement module, digest mismatch, or any contract/graph/consumer
-failure fails the release gate.
+with the declared compatibility tuple. If the proxy omits its origin hash, the
+checkout tag commit is required as explicit fallback provenance. A timeout,
+missing or unreadable shipped contract, replacement module, digest mismatch,
+missing provenance, or any contract/graph/consumer failure fails the release
+gate.
 
 For `v0.x`, document breaking changes in the changelog. For `v1.0.0` and
 later, breaking exported API changes require a new major version.
 
 ## After Tagging
 
+- Run the bounded stable-tag integration seam against the published tag. It
+  executes the same isolated, proxy-only consumer and asserts matching contract
+  digests, the exact tuple and sums, provenance, and typed call evidence:
+
+```sh
+version=v0.4.1 # replace with the published stable tag
+LLMCALLER_PROXY_TAG="$version" \
+LLMCALLER_PROXY_TAG_COMMIT="$(git rev-list -n 1 "$version")" \
+GOWORK=off go test ./internal/cmd/proxyconsumer \
+  -run '^TestPublishedStableTagProxyConsumer$' -count=1 -timeout 25m -v
+```
+
 - Wait for the proxy-backed tag consumer workflow and retain its version, sum,
-  dual contract digest, caller origin, and typed-call artifact; it must contain
-  no `replace`, `exclude`, `go.work`, or pseudo-version upstream.
+  dual contract digest, caller provenance, and typed-call artifact; it must
+  contain no `replace`, `exclude`, `go.work`, or pseudo-version upstream.
 - Create a GitHub release from the tag.
 - Include changelog highlights, compatibility notes, and any migration steps.
 - Verify the module is available through the Go module proxy.

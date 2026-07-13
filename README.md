@@ -225,9 +225,10 @@ are not build, CI, or release gates. Every pushed `v*` tag runs the
 waits at most ten minutes for the exact tag on `proxy.golang.org`, records
 matching SHA-256 digests for the checkout and proxy-module copies of the tagged
 compatibility contract plus exact declared and resolved versions, sums, and
-caller origin, and runs a typed clean consumer without `replace`, `exclude`,
+fail-closed caller provenance (the proxy origin hash or the checkout tag commit
+fallback), and runs a typed clean consumer without `replace`, `exclude`,
 `go.work`, or pseudo-version upstreams. Tuple validation begins only after the
-two shipped-contract digests match.
+two shipped-contract digests match, and the gate cannot pass without provenance.
 
 This project is MIT licensed. Dependency provenance is recorded in
 [`THIRD_PARTY_NOTICES.md`](THIRD_PARTY_NOTICES.md).

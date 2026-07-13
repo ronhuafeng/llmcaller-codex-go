@@ -20,12 +20,16 @@ jobs:
         with:
           go-version: stable
           cache: false
+      - name: Verify proxy module manifest binding
+        run: |
+          GOWORK=off go test ./internal/cmd/proxyconsumer -run '^TestBindCompatibilityTupleRequiresProxyArtifactDigestMatch$' -count=1
       - name: Resolve exact tag and run clean consumer
         env:
           CALLER_TAG: ${{ github.ref_name }}
         run: |
           go run ./internal/cmd/proxyconsumer \
             -tag "$CALLER_TAG" \
+            -tag-commit "$(git rev-parse HEAD)" \
             -compatibility compatibility.json \
             -module-compatibility compatibility.json \
             -proxy https://proxy.golang.org \
