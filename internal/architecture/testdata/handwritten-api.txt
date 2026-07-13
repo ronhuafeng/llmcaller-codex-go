@@ -14,11 +14,11 @@ method github.com/ronhuafeng/llmcaller-codex-go/llmcaller/codex.Stream.Notificat
 method github.com/ronhuafeng/llmcaller-codex-go/llmcaller/codex.Stream.Resultfunc() (github.com/ronhuafeng/codexsdk-go/codexsdk.StartedThreadRun, bool)
 method github.com/ronhuafeng/llmcaller-codex-go/llmcaller/codex.Stream.SDKStreamfunc() *github.com/ronhuafeng/codexsdk-go/codexsdk.Stream[github.com/ronhuafeng/codexsdk-go/codexsdk.StartedThreadRun]
 method github.com/ronhuafeng/llmcaller-codex-go/llmcaller/codex.Stream.Waitfunc(ctx context.Context) (github.com/ronhuafeng/codexsdk-go/codexsdk.StartedThreadRun, error)
-type github.com/ronhuafeng/llmcaller-codex-go/llmcaller/codex.Caller struct{runner github.com/ronhuafeng/llmcaller-codex-go/llmcaller/codex.ThreadRunner; defaults github.com/ronhuafeng/codexsdk-go/codexsdk.StartThreadRunRequest; profile github.com/ronhuafeng/llmcaller-codex-go/llmcaller/codex.safetyProfile}
+type github.com/ronhuafeng/llmcaller-codex-go/llmcaller/codex.Caller struct{}
 type github.com/ronhuafeng/llmcaller-codex-go/llmcaller/codex.Details struct{Run github.com/ronhuafeng/codexsdk-go/codexsdk.StartedThreadRun}
-type github.com/ronhuafeng/llmcaller-codex-go/llmcaller/codex.Options struct{Runner github.com/ronhuafeng/llmcaller-codex-go/llmcaller/codex.ThreadRunner; Defaults github.com/ronhuafeng/codexsdk-go/codexsdk.StartThreadRunRequest; profile github.com/ronhuafeng/llmcaller-codex-go/llmcaller/codex.safetyProfile}
+type github.com/ronhuafeng/llmcaller-codex-go/llmcaller/codex.Options struct{Runner github.com/ronhuafeng/llmcaller-codex-go/llmcaller/codex.ThreadRunner; Defaults github.com/ronhuafeng/codexsdk-go/codexsdk.StartThreadRunRequest}
 type github.com/ronhuafeng/llmcaller-codex-go/llmcaller/codex.SchemaPolicyError struct{Path string; Kind string; Err error}
-type github.com/ronhuafeng/llmcaller-codex-go/llmcaller/codex.Stream struct{stream github.com/ronhuafeng/llmcaller-codex-go/llmcaller/codex.startedRunStream; sdk *github.com/ronhuafeng/codexsdk-go/codexsdk.Stream[github.com/ronhuafeng/codexsdk-go/codexsdk.StartedThreadRun]; finalize func(github.com/ronhuafeng/codexsdk-go/codexsdk.StartedThreadRun, error) (github.com/ronhuafeng/codexsdk-go/codexsdk.StartedThreadRun, error)}
+type github.com/ronhuafeng/llmcaller-codex-go/llmcaller/codex.Stream struct{}
 type github.com/ronhuafeng/llmcaller-codex-go/llmcaller/codex.ThreadRunner interface{Start(context.Context, github.com/ronhuafeng/codexsdk-go/codexsdk.StartThreadRunRequest) (github.com/ronhuafeng/codexsdk-go/codexsdk.StartedThreadRun, error); StartStream(context.Context, github.com/ronhuafeng/codexsdk-go/codexsdk.StartThreadRunRequest) (*github.com/ronhuafeng/codexsdk-go/codexsdk.Stream[github.com/ronhuafeng/codexsdk-go/codexsdk.StartedThreadRun], error)}
 var github.com/ronhuafeng/llmcaller-codex-go/llmcaller/codex.ErrEffectiveProfile error
 var github.com/ronhuafeng/llmcaller-codex-go/llmcaller/codex.ErrMissingSchemaJSON error

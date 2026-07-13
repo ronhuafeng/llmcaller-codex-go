@@ -98,7 +98,7 @@ func exportedDeclarations(pkg *types.Package) []string {
 		if !object.Exported() {
 			continue
 		}
-		declarations = append(declarations, types.ObjectString(object, qualifier))
+		declarations = append(declarations, publicObjectString(object, qualifier))
 		typeName, ok := object.(*types.TypeName)
 		if !ok {
 			continue
@@ -116,4 +116,49 @@ func exportedDeclarations(pkg *types.Package) []string {
 		}
 	}
 	return declarations
+}
+
+func publicObjectString(object types.Object, qualifier types.Qualifier) string {
+	typeName, ok := object.(*types.TypeName)
+	if !ok || typeName.IsAlias() {
+		return types.ObjectString(object, qualifier)
+	}
+	named, ok := typeName.Type().(*types.Named)
+	if !ok {
+		return types.ObjectString(object, qualifier)
+	}
+	structure, ok := named.Underlying().(*types.Struct)
+	if !ok {
+		return types.ObjectString(object, qualifier)
+	}
+
+	var fields []string
+	for index := 0; index < structure.NumFields(); index++ {
+		field := structure.Field(index)
+		if !field.Exported() {
+			continue
+		}
+		declaration := types.TypeString(field.Type(), qualifier)
+		if !field.Embedded() {
+			declaration = field.Name() + " " + declaration
+		}
+		if tag := structure.Tag(index); tag != "" {
+			declaration += " `" + tag + "`"
+		}
+		fields = append(fields, declaration)
+	}
+	return fmt.Sprintf("type %s.%s%s struct{%s}", qualifier(typeName.Pkg()), typeName.Name(), publicTypeParameters(named, qualifier), strings.Join(fields, "; "))
+}
+
+func publicTypeParameters(named *types.Named, qualifier types.Qualifier) string {
+	parameters := named.TypeParams()
+	if parameters == nil || parameters.Len() == 0 {
+		return ""
+	}
+	declarations := make([]string, 0, parameters.Len())
+	for index := 0; index < parameters.Len(); index++ {
+		parameter := parameters.At(index)
+		declarations = append(declarations, parameter.Obj().Name()+" "+types.TypeString(parameter.Constraint(), qualifier))
+	}
+	return "[" + strings.Join(declarations, ", ") + "]"
 }
