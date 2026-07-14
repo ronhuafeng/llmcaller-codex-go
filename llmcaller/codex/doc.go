@@ -7,6 +7,9 @@
 // apply the same effective-policy verification after execution. Stream keeps
 // exact SDK notifications, lifecycle observation, terminal results, errors,
 // and a typed SDKStream escape hatch without projecting away generated facts.
+// A decoded partial start remains observable and profile-checked when its
+// required thread identity is missing; pre-response failures do not create a
+// synthetic profile mismatch.
 // The package does not own Go type projection, decoding, validation, retries,
 // transport, or business semantics.
 //

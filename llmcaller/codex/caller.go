@@ -212,7 +212,7 @@ func ReadOnlyEphemeralOptions(runner ThreadRunner) Options {
 // Call executes the detailed path and projects its available neutral facts.
 func (c *Caller) Call(ctx context.Context, request llmadapter.Request) (llmadapter.Response, error) {
 	run, runErr := c.CallDetailed(ctx, request)
-	if !hasRunEvidence(run) {
+	if !hasRunEvidence(run, runErr) {
 		return llmadapter.Response{}, runErr
 	}
 	response, projectionErr := responseFromRun(run)
@@ -238,7 +238,7 @@ func (c *Caller) finalizeRun(run codexsdk.StartedThreadRun, runErr error) (codex
 	if cloneErr != nil {
 		cloned = run
 	}
-	profileErr := c.validateProfile(cloned)
+	profileErr := c.validateProfile(cloned, runErr)
 	return cloned, errors.Join(runErr, cloneErr, profileErr)
 }
 
@@ -309,8 +309,8 @@ func enforceReadOnlyEphemeralProfile(request *codexsdk.StartThreadRunRequest) {
 	request.Turn.ApprovalPolicy = protocolv2.Value(protocolv2.NewAskForApprovalNever())
 }
 
-func (c *Caller) validateProfile(run codexsdk.StartedThreadRun) error {
-	if c.profile != profileReadOnlyEphemeral || run.Start.Thread.ID == "" {
+func (c *Caller) validateProfile(run codexsdk.StartedThreadRun, runErr error) error {
+	if c.profile != profileReadOnlyEphemeral || !hasDecodedStart(run, runErr) {
 		return nil
 	}
 	if run.Start.ApprovalPolicy.Kind() != protocolv2.AskForApprovalKindNever {
@@ -342,8 +342,12 @@ func responseFromRun(run codexsdk.StartedThreadRun) (llmadapter.Response, error)
 	return response, cloneErr
 }
 
-func hasRunEvidence(run codexsdk.StartedThreadRun) bool {
-	return !reflect.DeepEqual(run, codexsdk.StartedThreadRun{})
+func hasRunEvidence(run codexsdk.StartedThreadRun, runErr error) bool {
+	return !reflect.DeepEqual(run, codexsdk.StartedThreadRun{}) || hasDecodedStart(run, runErr)
+}
+
+func hasDecodedStart(run codexsdk.StartedThreadRun, runErr error) bool {
+	return run.Start.Thread.ID != "" || errors.Is(runErr, codexsdk.ErrMissingThreadID)
 }
 
 func effectiveModel(run codexsdk.StartedThreadRun) string {
@@ -710,10 +714,12 @@ func cloneStartedRun(run codexsdk.StartedThreadRun) (codexsdk.StartedThreadRun, 
 		}
 		cloned.Run.Usage = &usage
 	}
-	cloned.Run.Notifications = make([]protocolv2.ServerNotification, len(run.Run.Notifications))
-	for index := range run.Run.Notifications {
-		if err := cloneGenerated(run.Run.Notifications[index], &cloned.Run.Notifications[index]); err != nil {
-			return cloned, err
+	if run.Run.Notifications != nil {
+		cloned.Run.Notifications = make([]protocolv2.ServerNotification, len(run.Run.Notifications))
+		for index := range run.Run.Notifications {
+			if err := cloneGenerated(run.Run.Notifications[index], &cloned.Run.Notifications[index]); err != nil {
+				return cloned, err
+			}
 		}
 	}
 	cloned.Run.Diagnostics = append([]codexsdk.DiagnosticRef(nil), run.Run.Diagnostics...)
