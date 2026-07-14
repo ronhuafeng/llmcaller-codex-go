@@ -6,6 +6,24 @@ This project follows Semantic Versioning.
 
 ## [Unreleased]
 
+This legacy module path is frozen. Future releases use
+`github.com/ronhuafeng/llm-go/llmcaller/codex`.
+
+## [0.4.2] - 2026-07-14
+
+### Deprecated
+
+- Froze `github.com/ronhuafeng/llmcaller-codex-go` at its final legacy release.
+  The replacement module is
+  `github.com/ronhuafeng/llm-go/llmcaller/codex`, beginning with `v0.5.0`; see
+  the [repository migration guide](docs/llm-go-migration.md) for the exact
+  adapter and upstream import mappings.
+- Ended feature and security maintenance for the legacy module path. Existing
+  immutable versions remain available through the public Go proxy until the
+  repository is archived after replacement verification.
+
+### Fixed
+
 - Fixed named-profile verification for decoded partial thread starts that lack
   a required thread ID. Neutral, detailed, and streaming paths now retain the
   exact start evidence and expose both the SDK identity cause and

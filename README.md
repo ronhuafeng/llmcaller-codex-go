@@ -1,5 +1,13 @@
 # llmcaller-codex-go
 
+> [!IMPORTANT]
+> This legacy module path is frozen at its final release, `v0.4.2`. Development
+> continues in [`ronhuafeng/llm-go`](https://github.com/ronhuafeng/llm-go) at
+> `github.com/ronhuafeng/llm-go/llmcaller/codex`. No feature or security
+> maintenance continues here. Existing immutable versions remain available
+> through the public Go proxy. See the
+> [migration guide](docs/llm-go-migration.md).
+
 `llmcaller-codex-go` adapts provider-neutral structured calls from
 [`llmkit-go`](https://github.com/ronhuafeng/llmkit-go) to exact Codex lifecycle
 operations from [`codexsdk-go`](https://github.com/ronhuafeng/codexsdk-go).
@@ -12,7 +20,7 @@ protocol, streaming, and thread lifecycle belong to `codexsdk-go`.
 ## Install
 
 ```sh
-go get github.com/ronhuafeng/llmcaller-codex-go@v0.4.1
+go get github.com/ronhuafeng/llmcaller-codex-go@v0.4.2
 ```
 
 Go 1.23 or newer is required.

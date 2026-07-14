@@ -13,6 +13,11 @@
 // The package does not own Go type projection, decoding, validation, retries,
 // transport, or business semantics.
 //
+// Deprecated: this legacy module path is frozen at v0.4.2. Migrate to
+// github.com/ronhuafeng/llm-go/llmcaller/codex, beginning with v0.5.0. No
+// feature or security maintenance continues on this module path; immutable
+// legacy versions remain available through the public Go proxy.
+//
 // StrictOutputSchemaFromJSON preserves supported constraints and unknown
 // keyword JSON values, but intentionally narrows the JSON Schema instance
 // language by promoting an optional property to required only when its complete
