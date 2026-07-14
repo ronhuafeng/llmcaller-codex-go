@@ -171,9 +171,14 @@ func TestProxyTagConsumerWorkflowIsTagTriggeredAndBounded(t *testing.T) {
 	if contract.CallerTag != `${{ github.ref_name }}` {
 		t.Errorf("proxy consumer CALLER_TAG = %q", contract.CallerTag)
 	}
+	if !strings.Contains(contract.BindingTestRun, `go test ./internal/cmd/proxyconsumer -run '^TestBindCompatibilityTupleRequiresProxyArtifactDigestMatch$' -count=1`) {
+		t.Errorf("proxy workflow does not execute the artifact-binding behavior contract: %q", contract.BindingTestRun)
+	}
 	for _, required := range []string{
 		`go run ./internal/cmd/proxyconsumer`,
 		`-compatibility compatibility.json`,
+		`-module-compatibility compatibility.json`,
+		`-tag-commit "$(git rev-parse HEAD)"`,
 		`-proxy https://proxy.golang.org`,
 		`-timeout 10m`,
 		`-retry-interval 15s`,
@@ -201,15 +206,91 @@ jobs:
         run: echo no
 `
 	contract := parseProxyWorkflowContract(fixture)
-	if contract.TagPattern != "" || contract.CallerTag != "" || contract.Run != "" {
+	if contract.TagPattern != "" || contract.CallerTag != "" || contract.BindingTestRun != "" || contract.Run != "" {
 		t.Fatalf("unrelated workflow strings satisfied contract: %#v", contract)
 	}
 }
 
+func TestPublishedStableTagProxyConsumerIsRunnableReleaseSeam(t *testing.T) {
+	root := repoRoot(t)
+	testPath := filepath.Join(root, "internal", "cmd", "proxyconsumer", "main_test.go")
+	if !gateSelectorExists(t, testPath, "go_test", "TestPublishedStableTagProxyConsumer") {
+		t.Fatal("published stable-tag proxy consumer integration test is missing")
+	}
+	release, err := os.ReadFile(filepath.Join(root, "RELEASE.md"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, required := range []string{
+		`LLMCALLER_PROXY_TAG="$version"`,
+		`go test ./internal/cmd/proxyconsumer`,
+		`-run '^TestPublishedStableTagProxyConsumer$'`,
+		`-timeout 25m`,
+	} {
+		if !strings.Contains(string(release), required) {
+			t.Errorf("release checklist does not expose stable-tag integration seam %q", required)
+		}
+	}
+}
+
+func TestProxyConsumerRunBindsCheckoutToResolvedModuleArtifact(t *testing.T) {
+	root := repoRoot(t)
+	path := filepath.Join(root, "internal", "cmd", "proxyconsumer", "main.go")
+	file, err := parser.ParseFile(token.NewFileSet(), path, nil, parser.SkipObjectResolution)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var runFunction *ast.FuncDecl
+	for _, declaration := range file.Decls {
+		function, ok := declaration.(*ast.FuncDecl)
+		if ok && function.Name.Name == "run" {
+			runFunction = function
+			break
+		}
+	}
+	if runFunction == nil {
+		t.Fatal("proxy consumer run function is missing")
+	}
+	boundCalls := 0
+	ast.Inspect(runFunction.Body, func(node ast.Node) bool {
+		call, ok := node.(*ast.CallExpr)
+		if !ok {
+			return true
+		}
+		function, ok := call.Fun.(*ast.Ident)
+		if !ok || function.Name != "bindCompatibilityTuple" {
+			return true
+		}
+		boundCalls++
+		if len(call.Args) != 4 ||
+			!isSelector(call.Args[0], "options", "compatibilityPath") ||
+			!isSelector(call.Args[1], "options", "moduleCompatibilityPath") ||
+			!isIdentifier(call.Args[2], "modules") ||
+			!isSelector(call.Args[3], "options", "tag") {
+			t.Errorf("run must bind checkout and proxy-module manifests from the resolved module graph")
+		}
+		return true
+	})
+	if boundCalls != 1 {
+		t.Fatalf("run bindCompatibilityTuple calls = %d, want 1", boundCalls)
+	}
+}
+
+func isSelector(expression ast.Expr, receiver string, field string) bool {
+	selector, ok := expression.(*ast.SelectorExpr)
+	return ok && selector.Sel.Name == field && isIdentifier(selector.X, receiver)
+}
+
+func isIdentifier(expression ast.Expr, name string) bool {
+	identifier, ok := expression.(*ast.Ident)
+	return ok && identifier.Name == name
+}
+
 type proxyWorkflowContract struct {
-	TagPattern string
-	CallerTag  string
-	Run        string
+	TagPattern     string
+	CallerTag      string
+	BindingTestRun string
+	Run            string
 }
 
 func parseProxyWorkflowContract(workflow string) proxyWorkflowContract {
@@ -218,7 +299,7 @@ func parseProxyWorkflowContract(workflow string) proxyWorkflowContract {
 	inOn := false
 	inPush := false
 	inProxyJob := false
-	inResolverStep := false
+	stepName := ""
 	stepSection := ""
 	collectRun := false
 	for _, line := range lines {
@@ -240,19 +321,19 @@ func parseProxyWorkflowContract(workflow string) proxyWorkflowContract {
 		}
 		if indent == 2 {
 			inProxyJob = trimmed == "proxy-consumer:"
-			inResolverStep = false
+			stepName = ""
 			collectRun = false
 		}
 		if !inProxyJob {
 			continue
 		}
 		if indent == 6 && strings.HasPrefix(trimmed, "- ") {
-			inResolverStep = strings.TrimSpace(strings.TrimPrefix(trimmed, "- name:")) == "Resolve exact tag and run clean consumer"
+			stepName = strings.TrimSpace(strings.TrimPrefix(trimmed, "- name:"))
 			stepSection = ""
 			collectRun = false
 			continue
 		}
-		if !inResolverStep {
+		if stepName != "Resolve exact tag and run clean consumer" && stepName != "Verify proxy module manifest binding" {
 			continue
 		}
 		if indent == 8 {
@@ -267,11 +348,18 @@ func parseProxyWorkflowContract(workflow string) proxyWorkflowContract {
 			}
 			continue
 		}
-		if stepSection == "env" && indent == 10 && strings.HasPrefix(trimmed, "CALLER_TAG:") {
-			contract.CallerTag = strings.TrimSpace(strings.TrimPrefix(trimmed, "CALLER_TAG:"))
+		if stepSection == "env" && indent == 10 {
+			switch {
+			case strings.HasPrefix(trimmed, "CALLER_TAG:"):
+				contract.CallerTag = strings.TrimSpace(strings.TrimPrefix(trimmed, "CALLER_TAG:"))
+			}
 		}
 		if collectRun && indent >= 10 {
-			contract.Run += trimmed + "\n"
+			if stepName == "Verify proxy module manifest binding" {
+				contract.BindingTestRun += trimmed + "\n"
+			} else {
+				contract.Run += trimmed + "\n"
+			}
 		}
 	}
 	return contract

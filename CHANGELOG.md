@@ -11,6 +11,12 @@ This project follows Semantic Versioning.
   exact start evidence and expose both the SDK identity cause and
   `ErrEffectiveProfile` when applicable, without synthesizing a profile error
   for failures before any response is decoded.
+- Bound the tag gate's reviewed compatibility contract to the copy shipped in
+  the proxy-resolved caller module. The gate now requires identical checkout
+  and module-artifact SHA-256 digests before it validates the exact version
+  tuple, and retains both digests plus fail-closed caller origin/tag-commit
+  provenance. The stable-tag path is also exposed as a bounded integration test
+  for release validation.
 
 ## [0.4.1] - 2026-07-13
 
