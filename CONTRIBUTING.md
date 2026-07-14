@@ -1,6 +1,13 @@
 # Contributing
 
-Thank you for helping improve `llmcaller-codex-go`.
+> [!IMPORTANT]
+> This legacy repository is frozen at `v0.4.2`. Active development has moved
+> to [`ronhuafeng/llm-go`](https://github.com/ronhuafeng/llm-go). No feature or
+> security maintenance continues here. Before archival, contributions to this
+> repository are limited to corrections required for migration, release
+> evidence, or archival.
+
+Thank you for helping keep the final migration and release evidence accurate.
 
 This repository is intentionally small. It should stay focused on adapting
 `llmkit-go` typed requests to `codexsdk-go` Codex thread calls.
@@ -24,12 +31,9 @@ GOWORK=off go test ./...
 
 ## Scope
 
-Good contributions include:
-
-- adapter behavior for `llmadapter.Caller`;
-- Codex-specific structured output schema normalization;
-- tests that protect the adapter boundary;
-- documentation, CI, supply-chain, and release hygiene.
+Before archival, accepted corrections are limited to migration mappings, final
+release or public-proxy evidence, and archival metadata. Runtime, API, schema,
+test, CI-feature, and dependency development belongs in `llm-go`.
 
 Out of scope for this repository:
 
